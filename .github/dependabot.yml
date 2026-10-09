@@ -1,0 +1,93 @@
+# Dependabot version updates. Security updates run separately (no config
+# needed) and bypass cooldown, since they fix known vulnerabilities.
+# cooldown holds each version update until the release is 7 days old, past
+# the window where most malicious or broken releases get caught and yanked.
+# Group Actions updates, including majors, to reduce repeat review cycles.
+# Review every changed action and confirm its checks pass before merging.
+# The package examples below choose their own grouping limits; adjust them
+# to the project's compatibility needs.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ["*"]
+
+  # Uncomment per ecosystem when the project gains one, and point directory
+  # at the manifest. Watch 0.x packages: semver allows breaking minors
+  # there, so codegen and contract-critical 0.x tools must arrive as their
+  # own PR. Do that with a dedicated group listed BEFORE the catch-all
+  # (first matching group wins), never with exclude-patterns: Dependabot
+  # ignores exclude-patterns when the group's patterns is ["*"]
+  # (dependabot/dependabot-core#7523). The npm block below carries an
+  # example codegen group in that shape.
+  # Record unsupported upgrades beside their ecosystem, with the reason
+  # and the condition for removing the ignore. Ignore only the blocked
+  # update level so supported minor and patch releases remain eligible.
+  # Example inside an npm entry, after checking the project's peer ranges:
+  # ignore:
+  #   - dependency-name: "typescript"
+  #     # Lift when the installed lint tooling supports the next TS major.
+  #     update-types: ["version-update:semver-major"]
+  #
+  # - package-ecosystem: "pip"          # pip, pip-compile, pipenv, poetry
+  #   directory: "/"
+  #   schedule:
+  #     interval: "weekly"
+  #   cooldown:
+  #     default-days: 7
+  #   groups:
+  #     python-minor-patch:
+  #       patterns: ["*"]
+  #       update-types: ["minor", "patch"]
+  #
+  # - package-ecosystem: "uv"           # reads pyproject.toml and uv.lock
+  #   directory: "/"                    # the pip ecosystem leaves uv.lock stale
+  #   schedule:
+  #     interval: "weekly"
+  #   cooldown:
+  #     default-days: 7
+  #   groups:
+  #     uv-minor-patch:
+  #       patterns: ["*"]
+  #       update-types: ["minor", "patch"]
+  #
+  # - package-ecosystem: "npm"
+  #   directory: "/"
+  #   schedule:
+  #     interval: "weekly"
+  #   cooldown:
+  #     default-days: 7
+  #   groups:
+  #     codegen-tools:                  # listed first, so it wins the match
+  #       patterns: ["@hey-api/*"]      # example: openapi client generator
+  #     npm-minor-patch:
+  #       patterns: ["*"]
+  #       update-types: ["minor", "patch"]
+  #
+  # Dockerfile base images.
+  # - package-ecosystem: "docker"
+  #   directory: "/"
+  #   schedule:
+  #     interval: "weekly"
+  #   cooldown:
+  #     default-days: 7
+  #   groups:
+  #     docker:
+  #       patterns: ["*"]
+  #
+  # Compose service images need a separate entry; docker does not cover them.
+  # - package-ecosystem: "docker-compose"
+  #   directory: "/"
+  #   schedule:
+  #     interval: "weekly"
+  #   cooldown:
+  #     default-days: 7
+  #   groups:
+  #     compose:
+  #       patterns: ["*"]

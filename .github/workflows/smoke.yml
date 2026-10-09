@@ -1,0 +1,50 @@
+name: smoke
+
+# Runs the project's own verification entrypoint, `make smoke`, on every PR
+# and on pushes to main. Before /baseline runs there is no Makefile, so the
+# job skips with a notice instead of failing an empty repo. Once any
+# Makefile exists the job runs `make smoke` unconditionally: /baseline's
+# deliberately failing stub, a Makefile without a smoke target, and a
+# malformed Makefile are all red on purpose - red says "verification is not
+# real yet", visibly, on every PR. Detection is by file presence, never by
+# probing make (`make -n` both parses untrusted makefiles and hides
+# breakage as "no target").
+#
+# Not a required check by default. Once the project's smoke target is real
+# and green, add "smoke" as a required status check next to "scan for
+# secrets" in the protect-main ruleset (repo settings -> Rules), so merges
+# gate on project verification, not only secret scanning.
+#
+# Projects whose smoke target needs more than the ubuntu-latest defaults
+# (services, browsers, toolchains) extend this file; the Makefile stays the
+# single owner of what "verified" means.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v7
+
+      - name: detect makefile
+        id: detect
+        run: |
+          if [ -f Makefile ] || [ -f makefile ] || [ -f GNUmakefile ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "No Makefile yet; /baseline seeds one with a smoke target." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: make smoke
+        if: steps.detect.outputs.present == 'true'
+        run: make smoke
