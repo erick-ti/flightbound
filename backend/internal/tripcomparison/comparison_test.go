@@ -1,12 +1,53 @@
 package tripcomparison
 
 import (
+	"maps"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/erick-ti/flightbound/backend/internal/fxrates"
 )
 
 func strp(s string) *string { return &s }
+
+// unusedRates fails the test if a comparison asks it for rates. Comparisons
+// that convert nothing must not need them.
+type unusedRates struct{ t *testing.T }
+
+func (u unusedRates) Rates() (fxrates.Rates, bool) {
+	u.t.Helper()
+	u.t.Error("asked for exchange rates without anything to convert")
+	return fxrates.Rates{}, false
+}
+
+// unavailableRates has no usable rates, as when the ECB cannot be reached.
+type unavailableRates struct{}
+
+func (unavailableRates) Rates() (fxrates.Rates, bool) { return fxrates.Rates{}, false }
+
+// countingRates counts how often a comparison asks for rates.
+type countingRates struct {
+	source fxrates.Source
+	calls  int
+}
+
+func (c *countingRates) Rates() (fxrates.Rates, bool) {
+	c.calls++
+	return c.source.Rates()
+}
+
+// fixtureRates returns the ECB rates for 2026-10-09 from the published file
+// kept in the fxrates test data.
+func fixtureRates(t *testing.T) fxrates.Source {
+	t.Helper()
+	rates, err := fxrates.LoadFile(filepath.Join("..", "fxrates", "testdata", "eurofxref-daily.xml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return fxrates.Static(rates)
+}
 
 // sampleRequest is three nights in USD: Lisbon has both estimates, Porto
 // has no flight estimate yet.
@@ -23,9 +64,15 @@ func sampleRequest() Request {
 	}
 }
 
+// mustCompare compares a request that converts nothing.
 func mustCompare(t *testing.T, req Request) Comparison {
 	t.Helper()
-	got, errs := Compare(req)
+	return mustCompareWith(t, req, unusedRates{t})
+}
+
+func mustCompareWith(t *testing.T, req Request, rates fxrates.Source) Comparison {
+	t.Helper()
+	got, errs := Compare(req, rates)
 	if len(errs) > 0 {
 		t.Fatalf("Compare returned errors: %+v", errs)
 	}
@@ -121,7 +168,7 @@ func TestCalendarNights(t *testing.T) {
 	for _, tt := range tests {
 		req := sampleRequest()
 		req.CheckIn, req.CheckOut = tt.checkIn, tt.checkOut
-		got, errs := Compare(req)
+		got, errs := Compare(req, unusedRates{t})
 		if len(errs) > 0 || got.Nights != tt.want {
 			t.Errorf("%s to %s: nights %d, errors %+v; want %d", tt.checkIn, tt.checkOut, got.Nights, errs, tt.want)
 		}
@@ -150,7 +197,7 @@ func TestInvalidDates(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			req := sampleRequest()
 			req.CheckIn, req.CheckOut = tt.checkIn, tt.checkOut
-			_, errs := Compare(req)
+			_, errs := Compare(req, unusedRates{t})
 			if !slices.Equal(fields(errs), []string{tt.field}) {
 				t.Errorf("errors = %+v, want one error on %s", errs, tt.field)
 			}
@@ -261,7 +308,7 @@ func TestPrecisionFollowsCurrency(t *testing.T) {
 		req.Currency = tt.currency
 		req.Destinations[0].NightlyStayEstimate = strp("125") // valid in both currencies
 		req.Destinations[0].FlightEstimate = strp(tt.amount)
-		_, errs := Compare(req)
+		_, errs := Compare(req, unusedRates{t})
 		want := []FieldError{{Field: "destinations[0].flight_estimate", Message: tt.message}}
 		if !slices.Equal(errs, want) {
 			t.Errorf("%s %q: errors %+v, want %+v", tt.currency, tt.amount, errs, want)
@@ -292,7 +339,7 @@ func TestValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			req := sampleRequest()
 			tt.modify(&req)
-			got, errs := Compare(req)
+			got, errs := Compare(req, unusedRates{t})
 			if !slices.Equal(fields(errs), []string{tt.field}) {
 				t.Errorf("errors = %+v, want one error on %s", errs, tt.field)
 			}
@@ -320,7 +367,7 @@ func TestCollectsEveryError(t *testing.T) {
 	req.Travelers = 0
 	req.Destinations[0].FlightEstimate = strp("12.345")
 	req.Destinations[1].Label = ""
-	_, errs := Compare(req)
+	_, errs := Compare(req, unusedRates{t})
 	want := []string{"check_out", "travelers", "destinations[0].flight_estimate", "destinations[1].label"}
 	if !slices.Equal(fields(errs), want) {
 		t.Errorf("error fields = %v, want %v", fields(errs), want)
@@ -330,7 +377,7 @@ func TestCollectsEveryError(t *testing.T) {
 func TestReportsDestinationErrorsWhenCountIsWrong(t *testing.T) {
 	req := sampleRequest()
 	req.Destinations = []DestinationInput{{Label: "", FlightEstimate: strp("12.345"), NightlyStayEstimate: strp("-1")}}
-	_, errs := Compare(req)
+	_, errs := Compare(req, unusedRates{t})
 	want := []string{"destinations", "destinations[0].label", "destinations[0].flight_estimate", "destinations[0].nightly_stay_estimate"}
 	if !slices.Equal(fields(errs), want) {
 		t.Errorf("error fields = %v, want %v", fields(errs), want)
@@ -340,7 +387,7 @@ func TestReportsDestinationErrorsWhenCountIsWrong(t *testing.T) {
 func TestValidatesAtMostMaxDestinations(t *testing.T) {
 	req := sampleRequest()
 	req.Destinations = make([]DestinationInput, 50) // every label is blank
-	_, errs := Compare(req)
+	_, errs := Compare(req, unusedRates{t})
 	want := []string{"destinations", "destinations[0].label", "destinations[1].label", "destinations[2].label"}
 	if !slices.Equal(fields(errs), want) {
 		t.Errorf("error fields = %v, want %v", fields(errs), want)
@@ -357,5 +404,297 @@ func TestLargestInputsDoNotOverflow(t *testing.T) {
 	// 99999999999999 cents * 366 = 36599999999999634 cents.
 	if total := deref(got.Destinations[0].FlightAndStayEstimate); total != "365999999999996.34" {
 		t.Errorf("total = %s, want 365999999999996.34", total)
+	}
+}
+
+// convertedSample is the sample with Lisbon's stay at EUR 110 a night, so
+// its stay needs converting to USD.
+func convertedSample() Request {
+	req := sampleRequest()
+	req.Destinations[0].NightlyStayEstimate = strp("110")
+	req.Destinations[0].NightlyStayEstimateCurrency = strp("EUR")
+	return req
+}
+
+func TestConvertsAmountsInOtherCurrencies(t *testing.T) {
+	rates := &countingRates{source: fixtureRates(t)}
+	got := mustCompareWith(t, convertedSample(), rates)
+	if rates.calls != 1 {
+		t.Errorf("asked for rates %d times, want 1", rates.calls)
+	}
+
+	lisbon, porto := got.Destinations[0], got.Destinations[1]
+	for _, c := range []struct{ name, got, want string }{
+		{"flight", deref(lisbon.FlightEstimate), "600.10"},
+		{"flight currency", lisbon.FlightEstimateCurrency, "USD"},
+		{"nightly", deref(lisbon.NightlyStayEstimate), "110.00"},
+		{"nightly currency", lisbon.NightlyStayEstimateCurrency, "EUR"},
+		{"stay in EUR", deref(lisbon.StayEstimate), "330.00"},
+		{"converted flight", deref(lisbon.ConvertedFlightEstimate), "600.10"},
+		{"converted stay", deref(lisbon.ConvertedStayEstimate), "369.80"}, // 330 x 1.1206 = 369.798
+		{"total", deref(lisbon.FlightAndStayEstimate), "969.90"},
+	} {
+		if c.got != c.want {
+			t.Errorf("Lisbon %s = %s, want %s", c.name, c.got, c.want)
+		}
+	}
+	if !lisbon.Complete {
+		t.Error("Lisbon is incomplete")
+	}
+	if porto.NightlyStayEstimateCurrency != "USD" || deref(porto.ConvertedStayEstimate) != "270.00" ||
+		porto.ConvertedFlightEstimate != nil || porto.FlightAndStayEstimate != nil {
+		t.Errorf("Porto = nightly currency %s, converted stay %s, converted flight %s, total %s",
+			porto.NightlyStayEstimateCurrency, deref(porto.ConvertedStayEstimate),
+			deref(porto.ConvertedFlightEstimate), deref(porto.FlightAndStayEstimate))
+	}
+
+	fx := got.ExchangeRates
+	if fx == nil {
+		t.Fatal("ExchangeRates is nil after a conversion")
+	}
+	if !fx.Available || deref(fx.Date) != "2026-10-09" || !maps.Equal(fx.PerEuro, map[string]string{"USD": "1.1206"}) {
+		t.Errorf("ExchangeRates = available %v, date %s, per euro %v", fx.Available, deref(fx.Date), fx.PerEuro)
+	}
+}
+
+func TestConversionBetweenTwoOtherCurrencies(t *testing.T) {
+	req := sampleRequest()
+	req.Destinations[1].FlightEstimate = strp("54000")
+	req.Destinations[1].FlightEstimateCurrency = strp("JPY")
+	got := mustCompareWith(t, req, fixtureRates(t))
+	porto := got.Destinations[1]
+	if deref(porto.FlightEstimate) != "54000" || deref(porto.ConvertedFlightEstimate) != "341.22" || deref(porto.FlightAndStayEstimate) != "611.22" {
+		t.Errorf("Porto = flight %s, converted %s, total %s; want 54000, 341.22, 611.22",
+			deref(porto.FlightEstimate), deref(porto.ConvertedFlightEstimate), deref(porto.FlightAndStayEstimate))
+	}
+	// Both rates used are listed: JPY to USD goes through the euro.
+	want := map[string]string{"JPY": "177.34", "USD": "1.1206"}
+	if got.ExchangeRates == nil || !maps.Equal(got.ExchangeRates.PerEuro, want) {
+		t.Errorf("ExchangeRates = %+v, want per euro %v", got.ExchangeRates, want)
+	}
+	if !got.AllComplete || !got.Destinations[1].LowestEstimate {
+		t.Errorf("all complete %v, Porto lowest %v; want true, true", got.AllComplete, got.Destinations[1].LowestEstimate)
+	}
+}
+
+func TestNothingToConvertNeedsNoRates(t *testing.T) {
+	req := sampleRequest()
+	// A currency equal to the comparison currency, and another currency on
+	// an unknown amount, leave nothing to convert.
+	req.Destinations[0].FlightEstimateCurrency = strp("USD")
+	req.Destinations[1].FlightEstimateCurrency = strp("EUR")
+	got := mustCompare(t, req)
+	if got.ExchangeRates != nil {
+		t.Errorf("ExchangeRates = %+v, want nil", got.ExchangeRates)
+	}
+	lisbon, porto := got.Destinations[0], got.Destinations[1]
+	if deref(lisbon.ConvertedFlightEstimate) != "600.10" || deref(lisbon.ConvertedStayEstimate) != "375.75" {
+		t.Errorf("Lisbon converted = flight %s, stay %s; want 600.10, 375.75",
+			deref(lisbon.ConvertedFlightEstimate), deref(lisbon.ConvertedStayEstimate))
+	}
+	if porto.FlightEstimateCurrency != "EUR" || porto.ConvertedFlightEstimate != nil {
+		t.Errorf("Porto flight = currency %s, converted %s; want EUR, unknown",
+			porto.FlightEstimateCurrency, deref(porto.ConvertedFlightEstimate))
+	}
+}
+
+func TestUnavailableRatesLeaveConvertedAmountsUnknown(t *testing.T) {
+	got := mustCompareWith(t, convertedSample(), unavailableRates{})
+	lisbon := got.Destinations[0]
+	if deref(lisbon.StayEstimate) != "330.00" || lisbon.ConvertedStayEstimate != nil {
+		t.Errorf("Lisbon stay = %s, converted %s; want 330.00, unknown", deref(lisbon.StayEstimate), deref(lisbon.ConvertedStayEstimate))
+	}
+	if deref(lisbon.ConvertedFlightEstimate) != "600.10" {
+		t.Errorf("Lisbon converted flight = %s, want 600.10 (no conversion needed)", deref(lisbon.ConvertedFlightEstimate))
+	}
+	if lisbon.FlightAndStayEstimate != nil || lisbon.Complete || got.AllComplete || lisbon.LowestEstimate {
+		t.Errorf("Lisbon = total %s, complete %v, lowest %v; all complete %v",
+			deref(lisbon.FlightAndStayEstimate), lisbon.Complete, lisbon.LowestEstimate, got.AllComplete)
+	}
+	fx := got.ExchangeRates
+	if fx == nil || fx.Available || fx.Date != nil || fx.PerEuro == nil || len(fx.PerEuro) != 0 {
+		t.Errorf("ExchangeRates = %+v, want unavailable with no date and no rates", fx)
+	}
+}
+
+func TestMissingRateLeavesOnlyThatAmountUnknown(t *testing.T) {
+	rates, err := fxrates.ParseECB(strings.NewReader(`<?xml version="1.0" encoding="UTF-8"?>
+<gesmes:Envelope xmlns:gesmes="http://www.gesmes.org/xml/2002-08-01" xmlns="http://www.ecb.int/vocabulary/2002-08-01/eurofxref">
+	<Cube>
+		<Cube time='2026-10-09'>
+			<Cube currency='USD' rate='1.1206'/>
+		</Cube>
+	</Cube>
+</gesmes:Envelope>
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := convertedSample()
+	req.Destinations[1].NightlyStayEstimate = strp("9000")
+	req.Destinations[1].NightlyStayEstimateCurrency = strp("JPY")
+	got := mustCompareWith(t, req, fxrates.Static(rates))
+	lisbon, porto := got.Destinations[0], got.Destinations[1]
+	if deref(lisbon.ConvertedStayEstimate) != "369.80" || !lisbon.Complete {
+		t.Errorf("Lisbon converted stay = %s, complete %v; want 369.80, true", deref(lisbon.ConvertedStayEstimate), lisbon.Complete)
+	}
+	if deref(porto.StayEstimate) != "27000" || porto.ConvertedStayEstimate != nil || porto.Complete {
+		t.Errorf("Porto stay = %s, converted %s, complete %v; want 27000, unknown, false",
+			deref(porto.StayEstimate), deref(porto.ConvertedStayEstimate), porto.Complete)
+	}
+	fx := got.ExchangeRates
+	if fx == nil || !fx.Available || deref(fx.Date) != "2026-10-09" || !maps.Equal(fx.PerEuro, map[string]string{"USD": "1.1206"}) {
+		t.Errorf("ExchangeRates = %+v", fx)
+	}
+}
+
+func TestAmountCurrencyValidation(t *testing.T) {
+	tests := []struct {
+		name   string
+		modify func(*Request)
+		want   []FieldError
+	}{
+		{
+			"unsupported amount currency",
+			func(r *Request) { r.Destinations[0].FlightEstimateCurrency = strp("XYZ") },
+			[]FieldError{{"destinations[0].flight_estimate_currency", "Choose a supported currency."}},
+		},
+		{
+			"lowercase amount currency",
+			func(r *Request) { r.Destinations[1].NightlyStayEstimateCurrency = strp("eur") },
+			[]FieldError{{"destinations[1].nightly_stay_estimate_currency", "Choose a supported currency."}},
+		},
+		{
+			"empty amount currency",
+			func(r *Request) { r.Destinations[0].NightlyStayEstimateCurrency = strp("") },
+			[]FieldError{{"destinations[0].nightly_stay_estimate_currency", "Choose a supported currency."}},
+		},
+		{
+			"JPY precision in a USD comparison",
+			func(r *Request) {
+				r.Destinations[0].NightlyStayEstimateCurrency = strp("JPY")
+				r.Destinations[0].NightlyStayEstimate = strp("100.5")
+			},
+			[]FieldError{{"destinations[0].nightly_stay_estimate", "JPY amounts must be whole numbers."}},
+		},
+		{
+			"USD precision in a JPY comparison",
+			func(r *Request) {
+				r.Currency = "JPY"
+				r.Destinations[0].NightlyStayEstimate = strp("125")
+				r.Destinations[0].FlightEstimateCurrency = strp("USD")
+				r.Destinations[0].FlightEstimate = strp("12.345")
+			},
+			[]FieldError{{"destinations[0].flight_estimate", "USD amounts can have at most 2 decimal places."}},
+		},
+		{
+			"an amount in a valid currency is checked when the comparison currency is invalid",
+			func(r *Request) {
+				r.Currency = "XYZ"
+				r.Destinations[0].FlightEstimateCurrency = strp("EUR")
+				r.Destinations[0].FlightEstimate = strp("1.234")
+			},
+			[]FieldError{
+				{"currency", "Choose a supported currency."},
+				{"destinations[0].flight_estimate", "EUR amounts can have at most 2 decimal places."},
+			},
+		},
+		{
+			"an amount in an invalid currency is not checked",
+			func(r *Request) {
+				r.Destinations[0].FlightEstimateCurrency = strp("XYZ")
+				r.Destinations[0].FlightEstimate = strp("1.234")
+			},
+			[]FieldError{{"destinations[0].flight_estimate_currency", "Choose a supported currency."}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := sampleRequest()
+			tt.modify(&req)
+			if _, errs := Compare(req, unusedRates{t}); !slices.Equal(errs, tt.want) {
+				t.Errorf("errors = %+v, want %+v", errs, tt.want)
+			}
+		})
+	}
+}
+
+func TestLowestEstimateComparesConvertedTotals(t *testing.T) {
+	dest := func(label, flight, flightCurrency, nightly, nightlyCurrency string) DestinationInput {
+		return DestinationInput{
+			Label:                       label,
+			FlightEstimate:              strp(flight),
+			FlightEstimateCurrency:      strp(flightCurrency),
+			NightlyStayEstimate:         strp(nightly),
+			NightlyStayEstimateCurrency: strp(nightlyCurrency),
+		}
+	}
+	// Three nights in USD: A is 600.00 + EUR 300 (336.18) = 936.18, B is
+	// 900.00 + 36.18 = 936.18, and C is JPY 100000 (631.89) + 300.00 = 931.89.
+	a := dest("A", "600.00", "USD", "100", "EUR")
+	b := dest("B", "900.00", "USD", "12.06", "USD")
+	c := dest("C", "100000", "JPY", "100", "USD")
+	tests := []struct {
+		name         string
+		destinations []DestinationInput
+		totals       []string
+		lowest       []bool
+	}{
+		{"converted totals can tie", []DestinationInput{a, b}, []string{"936.18", "936.18"}, []bool{true, true}},
+		{"a converted total can be lowest", []DestinationInput{a, b, c}, []string{"936.18", "936.18", "931.89"}, []bool{false, false, true}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := sampleRequest()
+			req.Destinations = tt.destinations
+			got := mustCompareWith(t, req, fixtureRates(t))
+			var totals []string
+			var lowest []bool
+			for _, d := range got.Destinations {
+				totals = append(totals, deref(d.FlightAndStayEstimate))
+				lowest = append(lowest, d.LowestEstimate)
+			}
+			if !slices.Equal(totals, tt.totals) || !slices.Equal(lowest, tt.lowest) {
+				t.Errorf("totals %v, lowest %v; want %v, %v", totals, lowest, tt.totals, tt.lowest)
+			}
+		})
+	}
+}
+
+func TestConversionOverflowIsReportedForEveryDestination(t *testing.T) {
+	req := sampleRequest()
+	req.Currency = "IDR"
+	req.CheckIn, req.CheckOut = "2027-01-01", "2028-01-01" // 365 nights
+	for i := range req.Destinations {
+		req.Destinations[i].FlightEstimate = strp("0")
+		req.Destinations[i].NightlyStayEstimate = strp("999999999999.99")
+		req.Destinations[i].NightlyStayEstimateCurrency = strp("EUR")
+	}
+	_, errs := Compare(req, fixtureRates(t))
+	want := []FieldError{
+		{"destinations[0].nightly_stay_estimate", "This estimate is too large to convert."},
+		{"destinations[1].nightly_stay_estimate", "This estimate is too large to convert."},
+	}
+	if !slices.Equal(errs, want) {
+		t.Errorf("errors = %+v, want %+v", errs, want)
+	}
+}
+
+func TestOverflowOfConvertedPartsSum(t *testing.T) {
+	// In IDR, the largest flight converts to about 2.0e18 minor units and a
+	// four-night stay at the largest nightly amount to about 8.0e18. Each
+	// fits in int64; their sum does not.
+	req := sampleRequest()
+	req.Currency = "IDR"
+	req.CheckOut = "2027-03-14" // 4 nights
+	largest := strp("999999999999.99")
+	req.Destinations[0].FlightEstimate = largest
+	req.Destinations[0].FlightEstimateCurrency = strp("EUR")
+	req.Destinations[0].NightlyStayEstimate = largest
+	req.Destinations[0].NightlyStayEstimateCurrency = strp("EUR")
+	_, errs := Compare(req, fixtureRates(t))
+	want := []FieldError{{"destinations[0].flight_estimate", "This estimate is too large to calculate."}}
+	if !slices.Equal(errs, want) {
+		t.Errorf("errors = %+v, want %+v", errs, want)
 	}
 }

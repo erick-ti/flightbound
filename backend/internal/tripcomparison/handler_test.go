@@ -25,7 +25,7 @@ func post(t *testing.T, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/api/trip-comparisons", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	Handler().ServeHTTP(rec, req)
+	Handler(fixtureRates(t)).ServeHTTP(rec, req)
 	return rec
 }
 
@@ -57,7 +57,9 @@ func decodeError(t *testing.T, rec *httptest.ResponseRecorder) errorBody {
 }
 
 func TestHandlerReturnsComparison(t *testing.T) {
-	for _, body := range []string{sampleBody, sampleBody + "\n  \t"} {
+	// A null amount currency means the comparison currency.
+	withNullCurrencies := strings.Replace(sampleBody, `"flight_estimate": null,`, `"flight_estimate": null, "flight_estimate_currency": null, "nightly_stay_estimate_currency": null,`, 1)
+	for _, body := range []string{sampleBody, sampleBody + "\n  \t", withNullCurrencies} {
 		rec := post(t, body)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("status = %d, body %s", rec.Code, rec.Body)
@@ -67,9 +69,10 @@ func TestHandlerReturnsComparison(t *testing.T) {
 		// Decode raw values to pin the wire format: amounts are strings and
 		// unknown values are null rather than omitted or zero.
 		var got struct {
-			Nights       int                          `json:"nights"`
-			AllComplete  bool                         `json:"all_complete"`
-			Destinations []map[string]json.RawMessage `json:"destinations"`
+			Nights        int                          `json:"nights"`
+			AllComplete   bool                         `json:"all_complete"`
+			ExchangeRates json.RawMessage              `json:"exchange_rates"`
+			Destinations  []map[string]json.RawMessage `json:"destinations"`
 		}
 		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 			t.Fatalf("response is not JSON: %v", err)
@@ -77,14 +80,20 @@ func TestHandlerReturnsComparison(t *testing.T) {
 		if got.Nights != 3 || got.AllComplete || len(got.Destinations) != 2 {
 			t.Fatalf("nights %d, all complete %v, %d destinations", got.Nights, got.AllComplete, len(got.Destinations))
 		}
+		if string(got.ExchangeRates) != "null" {
+			t.Errorf("exchange_rates = %s, want null when nothing is converted", got.ExchangeRates)
+		}
 		lisbon, porto := got.Destinations[0], got.Destinations[1]
 		want := map[string]map[string]string{
 			"Lisbon": {
-				"flight_estimate": `"600.10"`, "stay_estimate": `"375.75"`,
+				"flight_estimate": `"600.10"`, "flight_estimate_currency": `"USD"`,
+				"nightly_stay_estimate_currency": `"USD"`, "stay_estimate": `"375.75"`,
+				"converted_flight_estimate": `"600.10"`, "converted_stay_estimate": `"375.75"`,
 				"flight_and_stay_estimate": `"975.85"`, "complete": "true", "lowest_estimate": "false",
 			},
 			"Porto": {
-				"flight_estimate": "null", "nightly_stay_estimate": `"90.00"`, "stay_estimate": `"270.00"`,
+				"flight_estimate": "null", "flight_estimate_currency": `"USD"`, "nightly_stay_estimate": `"90.00"`,
+				"stay_estimate": `"270.00"`, "converted_flight_estimate": "null", "converted_stay_estimate": `"270.00"`,
 				"flight_and_stay_estimate": "null", "complete": "false", "lowest_estimate": "false",
 			},
 		}
@@ -95,6 +104,33 @@ func TestHandlerReturnsComparison(t *testing.T) {
 					t.Errorf("%s %s = %s (present %v), want %s", name, key, raw, ok, value)
 				}
 			}
+		}
+	}
+}
+
+func TestHandlerReturnsConversions(t *testing.T) {
+	body := strings.Replace(sampleBody, `"nightly_stay_estimate": "125.25"`, `"nightly_stay_estimate": "110", "nightly_stay_estimate_currency": "EUR"`, 1)
+	rec := post(t, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body %s", rec.Code, rec.Body)
+	}
+	var got struct {
+		ExchangeRates json.RawMessage              `json:"exchange_rates"`
+		Destinations  []map[string]json.RawMessage `json:"destinations"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("response is not JSON: %v", err)
+	}
+	if want := `{"available":true,"date":"2026-10-09","per_euro":{"USD":"1.1206"}}`; string(got.ExchangeRates) != want {
+		t.Errorf("exchange_rates = %s, want %s", got.ExchangeRates, want)
+	}
+	lisbon := got.Destinations[0]
+	for key, value := range map[string]string{
+		"nightly_stay_estimate": `"110.00"`, "nightly_stay_estimate_currency": `"EUR"`, "stay_estimate": `"330.00"`,
+		"converted_stay_estimate": `"369.80"`, "flight_and_stay_estimate": `"969.90"`,
+	} {
+		if raw, ok := lisbon[key]; !ok || string(raw) != value {
+			t.Errorf("Lisbon %s = %s (present %v), want %s", key, raw, ok, value)
 		}
 	}
 }

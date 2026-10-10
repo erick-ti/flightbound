@@ -61,6 +61,24 @@ const checks = [
     },
   ],
   [
+    "amounts in other currencies are converted at the saved ECB rates",
+    async () => {
+      const { status, body } = await compare({
+        ...trip,
+        destinations: [
+          { ...trip.destinations[0], nightly_stay_estimate: "110", nightly_stay_estimate_currency: "EUR" },
+          trip.destinations[1],
+        ],
+      });
+      assert.equal(status, 200);
+      const [lisbon] = body.destinations;
+      assert.equal(lisbon.stay_estimate, "330.00");
+      assert.equal(lisbon.converted_stay_estimate, "369.80");
+      assert.equal(lisbon.flight_and_stay_estimate, "969.90");
+      assert.deepEqual(body.exchange_rates, { available: true, date: "2026-10-09", per_euro: { USD: "1.1206" } });
+    },
+  ],
+  [
     "tied complete estimates are all marked lowest",
     async () => {
       const { status, body } = await compare({

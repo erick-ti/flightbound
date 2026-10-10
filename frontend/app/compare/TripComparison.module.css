@@ -96,6 +96,20 @@
   color: #52606d;
 }
 
+/* An amount and its currency share one row; the amount takes the space. */
+.amount {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.amount input {
+  flex: 1;
+}
+
+.amount select {
+  flex: none;
+}
+
 .error {
   margin: 0;
   font-size: 0.9rem;
@@ -233,6 +247,13 @@
 
 .unknown {
   font-style: italic;
+  font-weight: 400;
+  color: #52606d;
+}
+
+.converted {
+  display: block;
+  font-size: 0.85rem;
   font-weight: 400;
   color: #52606d;
 }
