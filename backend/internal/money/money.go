@@ -117,6 +117,15 @@ func Add(a, b int64) (int64, bool) {
 	return a + b, true
 }
 
+// Sub returns a-b for non-negative amounts. It reports false if either
+// amount is negative or b is larger than a.
+func Sub(a, b int64) (int64, bool) {
+	if a < 0 || b < 0 || b > a {
+		return 0, false
+	}
+	return a - b, true
+}
+
 // MulInt returns a*n for a non-negative amount and count. It reports false
 // if either is negative or the product would overflow.
 func MulInt(a, n int64) (int64, bool) {
