@@ -1,0 +1,250 @@
+.page {
+  max-width: 64rem;
+  margin: 0 auto;
+  padding: 2rem 1rem 4rem;
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.5;
+  color: #1f2933;
+}
+
+.header h1 {
+  margin: 0 0 0.5rem;
+  font-size: 2rem;
+  line-height: 1.2;
+}
+
+.header p {
+  max-width: 42rem;
+  margin: 0 0 1.5rem;
+  color: #52606d;
+}
+
+.form {
+  margin: 0;
+}
+
+.bare {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.group {
+  display: grid;
+  gap: 1rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0.75rem 1.25rem 1.25rem;
+  border: 1px solid #d9e2ec;
+  border-radius: 8px;
+}
+
+.group legend {
+  padding: 0 0.25rem;
+  font-weight: 600;
+}
+
+/* Fields end with their control, so aligning cells to the end lines up the
+   inputs even when labels, hints, or errors wrap to different heights. */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr));
+  align-items: end;
+  gap: 1rem;
+}
+
+.field {
+  display: grid;
+  align-content: start;
+  gap: 0.25rem;
+}
+
+.field label {
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.field input,
+.field select {
+  min-width: 0;
+  padding: 0.5rem 0.625rem;
+  font: inherit;
+  color: inherit;
+  background: #fff;
+  border: 1px solid #9aa5b1;
+  border-radius: 6px;
+}
+
+.field input[aria-invalid="true"],
+.field select[aria-invalid="true"] {
+  border: 2px solid #b91c1c;
+}
+
+.field input:focus-visible,
+.field select:focus-visible,
+.button:focus-visible {
+  outline: 3px solid #2563eb;
+  outline-offset: 2px;
+}
+
+.hint {
+  margin: 0;
+  font-size: 0.85rem;
+  color: #52606d;
+}
+
+.error {
+  margin: 0;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #b91c1c;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.button {
+  justify-self: start;
+  padding: 0.55rem 1.1rem;
+  font: inherit;
+  font-weight: 600;
+  border: 1px solid #1e4e8c;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.button:disabled {
+  cursor: progress;
+  opacity: 0.6;
+}
+
+.primary {
+  color: #fff;
+  background: #1e4e8c;
+}
+
+.secondary {
+  color: #1e4e8c;
+  background: #fff;
+}
+
+.alert {
+  margin: 1.5rem 0 0;
+  padding: 0.75rem 1rem;
+  background: #fdf2f2;
+  border-left: 4px solid #b91c1c;
+}
+
+.results {
+  margin-top: 2rem;
+}
+
+.results h2 {
+  margin: 0;
+}
+
+.summary {
+  margin: 0.25rem 0 1rem;
+  color: #52606d;
+}
+
+.notice {
+  margin: 0 0 1rem;
+  padding: 0.75rem 1rem;
+  background: #fffbea;
+  border-left: 4px solid #b7791f;
+}
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+  gap: 1rem;
+}
+
+.staleCards {
+  opacity: 0.55;
+}
+
+.card {
+  padding: 1rem 1.25rem;
+  background: #fff;
+  border: 1px solid #d9e2ec;
+  border-radius: 8px;
+}
+
+.card h3 {
+  margin: 0;
+  font-size: 1.2rem;
+  overflow-wrap: anywhere;
+}
+
+.badge {
+  display: inline-block;
+  margin: 0.5rem 0 0;
+  padding: 0.1rem 0.6rem;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #14532d;
+  background: #e3f8ea;
+  border: 1px solid #86cfa0;
+  border-radius: 999px;
+}
+
+.amounts {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0.75rem 0 0;
+}
+
+.amounts div {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.amounts dt {
+  color: #52606d;
+}
+
+.amounts dd {
+  margin: 0;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.total {
+  padding-top: 0.5rem;
+  border-top: 1px solid #d9e2ec;
+}
+
+.total dt {
+  font-weight: 600;
+  color: inherit;
+}
+
+.unknown {
+  font-style: italic;
+  font-weight: 400;
+  color: #52606d;
+}
+
+.missing {
+  margin: 0.75rem 0 0;
+  font-size: 0.9rem;
+  color: #52606d;
+}
+
+.note {
+  margin: 1rem 0 0;
+  font-size: 0.9rem;
+  color: #52606d;
+}
