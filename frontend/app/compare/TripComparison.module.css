@@ -264,6 +264,17 @@
   color: #52606d;
 }
 
+.budget {
+  margin: 0.75rem 0 0;
+  font-size: 0.95rem;
+}
+
+/* The wording says "over"; the color only reinforces it. */
+.over {
+  font-weight: 600;
+  color: #9a3412;
+}
+
 .note {
   margin: 1rem 0 0;
   font-size: 0.9rem;
