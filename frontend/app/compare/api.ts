@@ -17,19 +17,31 @@ export type ComparisonRequest = {
   travelers: number;
   // The comparison currency, which every total uses.
   currency: string;
+  // An optional budget for the whole trip and the whole party; null when none.
+  budget: string | null;
+  budget_currency: string;
   destinations: DestinationInput[];
 };
 
-export type DestinationEstimate = DestinationInput & {
-  // In the nightly estimate's currency.
-  stay_estimate: string | null;
-  // In the comparison currency; null when unknown or not converted.
-  converted_flight_estimate: string | null;
-  converted_stay_estimate: string | null;
-  flight_and_stay_estimate: string | null;
-  complete: boolean;
-  lowest_estimate: boolean;
-};
+// How a destination compares with the budget, in the comparison currency.
+// budget_difference is the amount left (within), the amount over (over), or
+// the least amount over for an incomplete destination whose known part alone
+// is over the budget (over_at_least).
+export type BudgetCheck =
+  | { budget_status: "not_set" | "unknown"; budget_difference: null }
+  | { budget_status: "within" | "over" | "over_at_least"; budget_difference: string };
+
+export type DestinationEstimate = DestinationInput &
+  BudgetCheck & {
+    // In the nightly estimate's currency.
+    stay_estimate: string | null;
+    // In the comparison currency; null when unknown or not converted.
+    converted_flight_estimate: string | null;
+    converted_stay_estimate: string | null;
+    flight_and_stay_estimate: string | null;
+    complete: boolean;
+    lowest_estimate: boolean;
+  };
 
 // The ECB reference rates behind a comparison's conversions.
 export type ExchangeRates = {
@@ -45,6 +57,12 @@ export type Comparison = {
   nights: number;
   travelers: number;
   currency: string;
+  // The budget as entered, or null when none is set.
+  budget: string | null;
+  budget_currency: string;
+  // The budget in the comparison currency; null when none is set or it could
+  // not be converted.
+  converted_budget: string | null;
   all_complete: boolean;
   // null when nothing needed converting.
   exchange_rates: ExchangeRates | null;

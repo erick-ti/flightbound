@@ -1,8 +1,9 @@
 // Package tripcomparison compares flight-plus-stay estimates for two or
-// three destinations that share dates and a party size.
+// three destinations that share dates and a party size, and checks each
+// against an optional trip budget.
 //
-// Every amount is a traveler-entered estimate for the whole party, in a
-// supported currency of its own. This package validates the estimates,
+// Every amount is a traveler-entered figure for the whole party, in a
+// supported currency of its own. This package validates the amounts,
 // converts them to the comparison currency, and does all of the
 // arithmetic; clients display the results as returned.
 package tripcomparison
@@ -32,11 +33,16 @@ const (
 // Request is the body of a trip comparison request. Currency is the
 // comparison currency, which every total uses.
 type Request struct {
-	CheckIn      string             `json:"check_in"`
-	CheckOut     string             `json:"check_out"`
-	Travelers    int                `json:"travelers"`
-	Currency     string             `json:"currency"`
-	Destinations []DestinationInput `json:"destinations"`
+	CheckIn   string `json:"check_in"`
+	CheckOut  string `json:"check_out"`
+	Travelers int    `json:"travelers"`
+	Currency  string `json:"currency"`
+	// Budget is an optional budget for the whole trip and the whole party,
+	// as a decimal string; nil means no budget is set. A nil BudgetCurrency
+	// means the comparison currency.
+	Budget         *string            `json:"budget"`
+	BudgetCurrency *string            `json:"budget_currency"`
+	Destinations   []DestinationInput `json:"destinations"`
 }
 
 // DestinationInput holds one destination's estimates as decimal strings. A
@@ -61,10 +67,17 @@ type Comparison struct {
 	Nights    int    `json:"nights"`
 	Travelers int    `json:"travelers"`
 	Currency  string `json:"currency"`
+	// Budget is the budget in its own currency, or nil when none is set.
+	// ConvertedBudget is the budget in the comparison currency: the same
+	// amount when already in it, nil when none is set or no rate is
+	// available.
+	Budget          *string `json:"budget"`
+	BudgetCurrency  string  `json:"budget_currency"`
+	ConvertedBudget *string `json:"converted_budget"`
 	// AllComplete reports whether every destination has a total.
 	AllComplete bool `json:"all_complete"`
-	// ExchangeRates describes the rates used, or is nil when no known
-	// estimate needed converting.
+	// ExchangeRates describes the rates used, or is nil when neither a
+	// known estimate nor the budget needed converting.
 	ExchangeRates *ExchangeRates        `json:"exchange_rates"`
 	Destinations  []DestinationEstimate `json:"destinations"`
 }
@@ -104,7 +117,34 @@ type DestinationEstimate struct {
 	// LowestEstimate is true only when every destination is complete and
 	// this total equals the lowest one. Tied destinations are all marked.
 	LowestEstimate bool `json:"lowest_estimate"`
+	// BudgetStatus compares this destination with the budget in the
+	// comparison currency. BudgetDifference is the amount the total leaves
+	// (BudgetWithin) or goes over by (BudgetOver), or the least amount the
+	// destination goes over by (BudgetOverAtLeast); it is nil otherwise.
+	BudgetStatus     BudgetStatus `json:"budget_status"`
+	BudgetDifference *string      `json:"budget_difference"`
 }
+
+// BudgetStatus is the result of checking a destination against the budget.
+type BudgetStatus string
+
+// Budget statuses.
+const (
+	// BudgetNotSet means the request has no budget.
+	BudgetNotSet BudgetStatus = "not_set"
+	// BudgetUnknown means the destination cannot be checked: the budget
+	// could not be converted, or the destination is incomplete and its known
+	// part does not exceed the budget.
+	BudgetUnknown BudgetStatus = "unknown"
+	// BudgetWithin means the flight + stay total is at most the budget.
+	BudgetWithin BudgetStatus = "within"
+	// BudgetOver means the flight + stay total is more than the budget.
+	BudgetOver BudgetStatus = "over"
+	// BudgetOverAtLeast means the destination is incomplete but its known
+	// part alone is more than the budget. Amounts are never negative, so the
+	// missing part can only add to it.
+	BudgetOverAtLeast BudgetStatus = "over_at_least"
+)
 
 // FieldError describes one invalid request field. Field is the JSON path,
 // such as "check_out" or "destinations[1].flight_estimate".
@@ -115,8 +155,8 @@ type FieldError struct {
 
 // Compare validates req and calculates its comparison. It returns every
 // field error it finds, or the comparison when there are none. It asks
-// rates for exchange rates at most once, and only when a known estimate is
-// in a currency other than the comparison currency.
+// rates for exchange rates at most once, and only when a known estimate or
+// the budget is in a currency other than the comparison currency.
 func Compare(req Request, rates fxrates.Source) (Comparison, []FieldError) {
 	var v validator
 	nights := v.nights(req.CheckIn, req.CheckOut)
@@ -127,6 +167,8 @@ func Compare(req Request, rates fxrates.Source) (Comparison, []FieldError) {
 	if !curOK {
 		v.add("currency", "Choose a supported currency.")
 	}
+	var b budget
+	b.cur, b.amount = v.estimate("budget", req.Budget, req.BudgetCurrency, cur, curOK)
 	if n := len(req.Destinations); n < MinDestinations || n > MaxDestinations {
 		v.add("destinations", "Compare two or three destinations.")
 	}
@@ -139,7 +181,14 @@ func Compare(req Request, rates fxrates.Source) (Comparison, []FieldError) {
 	if len(v.errs) > 0 {
 		return Comparison{}, v.errs
 	}
-	return calculate(req, cur, nights, parsed, rates)
+	return calculate(req, cur, nights, b, parsed, rates)
+}
+
+// budget is a validated budget in minor units of its own currency. A nil
+// amount means no budget is set.
+type budget struct {
+	amount *int64
+	cur    money.Currency
 }
 
 // destination is a validated destination with estimates in minor units of
@@ -262,26 +311,38 @@ func amountMessage(err error, cur money.Currency) string {
 // multiplication in range, but converting to a currency with a much larger
 // rate can overflow, and so can adding the two converted estimates.
 const (
-	tooLargeToCalculate = "This estimate is too large to calculate."
-	tooLargeToConvert   = "This estimate is too large to convert."
+	tooLargeToCalculate     = "This estimate is too large to calculate."
+	tooLargeToConvert       = "This estimate is too large to convert."
+	budgetTooLargeToConvert = "This budget is too large to convert."
 )
 
 // calculate builds the comparison from validated input. Whole-party amounts
 // are never multiplied by the number of travelers. The flight estimate and
 // the stay estimate are each converted once, then added, so the converted
-// parts always sum to the total. It reports every overflow it finds.
-func calculate(req Request, cur money.Currency, nights int, parsed []destination, rates fxrates.Source) (Comparison, []FieldError) {
+// parts always sum to the total. The budget is converted once and never
+// changes a total or the lowest label. It reports every overflow it finds.
+func calculate(req Request, cur money.Currency, nights int, b budget, parsed []destination, rates fxrates.Source) (Comparison, []FieldError) {
 	result := Comparison{
-		CheckIn:      req.CheckIn,
-		CheckOut:     req.CheckOut,
-		Nights:       nights,
-		Travelers:    req.Travelers,
-		Currency:     cur.Code,
-		AllComplete:  true,
-		Destinations: make([]DestinationEstimate, len(parsed)),
+		CheckIn:        req.CheckIn,
+		CheckOut:       req.CheckOut,
+		Nights:         nights,
+		Travelers:      req.Travelers,
+		Currency:       cur.Code,
+		Budget:         format(b.cur, b.amount),
+		BudgetCurrency: b.cur.Code,
+		AllComplete:    true,
+		Destinations:   make([]DestinationEstimate, len(parsed)),
 	}
 	conv := converter{source: rates, to: cur}
 	var errs []FieldError
+	var convertedBudget *int64
+	if b.amount != nil {
+		var ok bool
+		if convertedBudget, ok = conv.convert(*b.amount, b.cur); !ok {
+			errs = append(errs, FieldError{Field: "budget", Message: budgetTooLargeToConvert})
+		}
+	}
+	result.ConvertedBudget = format(cur, convertedBudget)
 	totals := make([]int64, len(parsed))
 	for i, d := range parsed {
 		field := func(name string) string { return fmt.Sprintf("destinations[%d].%s", i, name) }
@@ -312,10 +373,12 @@ func calculate(req Request, cur money.Currency, nights int, parsed []destination
 		}
 		estimate.ConvertedFlightEstimate = format(cur, flight)
 		estimate.ConvertedStayEstimate = format(cur, stay)
+		var total *int64
 		if flight != nil && stay != nil {
-			if total, ok := money.Add(*flight, *stay); ok {
-				totals[i] = total
-				estimate.FlightAndStayEstimate = format(cur, &total)
+			if sum, ok := money.Add(*flight, *stay); ok {
+				total = &sum
+				totals[i] = sum
+				estimate.FlightAndStayEstimate = format(cur, total)
 				estimate.Complete = true
 			} else {
 				errs = append(errs, FieldError{Field: field("flight_estimate"), Message: tooLargeToCalculate})
@@ -324,6 +387,9 @@ func calculate(req Request, cur money.Currency, nights int, parsed []destination
 		if !estimate.Complete {
 			result.AllComplete = false
 		}
+		status, difference := checkBudget(b.amount != nil, convertedBudget, total, flight, stay)
+		estimate.BudgetStatus = status
+		estimate.BudgetDifference = format(cur, difference)
 		result.Destinations[i] = estimate
 	}
 	if len(errs) > 0 {
@@ -342,8 +408,44 @@ func calculate(req Request, cur money.Currency, nights int, parsed []destination
 	return result, nil
 }
 
-// converter converts estimates to the comparison currency. It asks its
-// source for rates the first time an estimate needs converting.
+// checkBudget compares a destination with the budget, both in the
+// comparison currency. set reports whether the request has a budget, and
+// budget is nil when it could not be converted. total is nil unless the
+// destination is complete. flight and stay are its converted parts. An
+// incomplete destination has at most one of them, unless their sum
+// overflowed, which fails the request.
+func checkBudget(set bool, budget, total, flight, stay *int64) (BudgetStatus, *int64) {
+	switch {
+	case !set:
+		return BudgetNotSet, nil
+	case budget == nil:
+		return BudgetUnknown, nil
+	case total != nil:
+		// Amounts are never negative, so one of these subtractions succeeds.
+		if left, ok := money.Sub(*budget, *total); ok {
+			return BudgetWithin, &left
+		}
+		if over, ok := money.Sub(*total, *budget); ok {
+			return BudgetOver, &over
+		}
+		return BudgetUnknown, nil
+	}
+	// The missing part can only add to the known one, so a known part above
+	// the budget puts the destination over it by at least the difference.
+	known := flight
+	if known == nil {
+		known = stay
+	}
+	if known != nil && *known > *budget {
+		if over, ok := money.Sub(*known, *budget); ok {
+			return BudgetOverAtLeast, &over
+		}
+	}
+	return BudgetUnknown, nil
+}
+
+// converter converts estimates and the budget to the comparison currency.
+// It asks its source for rates the first time an amount needs converting.
 type converter struct {
 	source  fxrates.Source
 	to      money.Currency

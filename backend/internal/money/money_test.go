@@ -154,6 +154,30 @@ func TestAdd(t *testing.T) {
 	}
 }
 
+func TestSub(t *testing.T) {
+	tests := []struct {
+		a, b int64
+		want int64
+		ok   bool
+	}{
+		{100000, 97585, 2415, true},
+		{97585, 97585, 0, true},
+		{0, 0, 0, true},
+		{math.MaxInt64, 0, math.MaxInt64, true},
+		{math.MaxInt64, math.MaxInt64, 0, true},
+		{97585, 100000, 0, false},
+		{0, 1, 0, false},
+		{-1, -2, 0, false},
+		{1, -1, 0, false},
+	}
+	for _, tt := range tests {
+		got, ok := Sub(tt.a, tt.b)
+		if got != tt.want || ok != tt.ok {
+			t.Errorf("Sub(%d, %d) = %d, %v; want %d, %v", tt.a, tt.b, got, ok, tt.want, tt.ok)
+		}
+	}
+}
+
 func TestMulInt(t *testing.T) {
 	tests := []struct {
 		a, n int64

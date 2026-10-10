@@ -11,7 +11,7 @@ cd backend
 go run ./cmd/server
 ```
 
-When an estimate is in a currency other than the comparison currency, the API downloads the European Central Bank's daily reference rates (`-fx-rates-url` changes the address). To work offline, give it a saved copy of the rates file instead, such as the one the checks use:
+When an estimate or the budget is in a currency other than the comparison currency, the API downloads the European Central Bank's daily reference rates (`-fx-rates-url` changes the address). To work offline, give it a saved copy of the rates file instead, such as the one the checks use:
 
 ```sh
 go run ./cmd/server -fx-rates-file internal/fxrates/testdata/eurofxref-daily.xml

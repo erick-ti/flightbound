@@ -38,6 +38,9 @@ type Draft = {
   checkOut: string;
   travelers: number;
   currency: string;
+  budget: string;
+  // Follows the comparison currency while null, like an estimate's currency.
+  budgetCurrency: string | null;
   destinations: DestinationDraft[];
 };
 
@@ -60,6 +63,8 @@ const initialDraft: Draft = {
   checkOut: "",
   travelers: 2,
   currency: "USD",
+  budget: "",
+  budgetCurrency: null,
   destinations: [blankDestination, blankDestination],
 };
 
@@ -170,6 +175,19 @@ export default function TripComparison() {
                   <CurrencyOptions />
                 </select>
               </Field>
+              <AmountField
+                path="budget"
+                label="Trip budget for the whole party"
+                hint="Optional. Each destination shows what its flights and stay leave for everything else."
+                currencyLabel="Currency of the budget"
+                errors={errors}
+                value={draft.budget}
+                currency={draft.budgetCurrency ?? draft.currency}
+                onValue={(budget) =>
+                  setDraft((current) => ({ ...current, budget, budgetCurrency: current.budgetCurrency ?? current.currency }))
+                }
+                onCurrency={(budgetCurrency) => update({ budgetCurrency })}
+              />
             </div>
           </fieldset>
 
@@ -258,11 +276,12 @@ export default function TripComparison() {
   );
 }
 
-// AmountField is an optional estimate with its own currency menu. path is
-// the estimate's API field; its currency's field is path + "_currency".
+// AmountField is an optional amount with its own currency menu. path is the
+// amount's API field; its currency's field is path + "_currency".
 function AmountField({
   path,
   label,
+  hint = "Optional. Leave blank if unknown.",
   currencyLabel,
   errors,
   value,
@@ -272,6 +291,7 @@ function AmountField({
 }: {
   path: string;
   label: string;
+  hint?: string;
   currencyLabel: string;
   errors: Record<string, string>;
   value: string;
@@ -283,7 +303,7 @@ function AmountField({
   const currencyPath = `${path}_currency`;
   const currencyError = errors[currencyPath];
   return (
-    <Field path={path} label={label} hint="Optional. Leave blank if unknown." error={amountError ?? currencyError}>
+    <Field path={path} label={label} hint={hint} error={amountError ?? currencyError}>
       <div className={styles.amount}>
         <input
           {...controlProps(path, amountError, true)}
@@ -325,6 +345,7 @@ function Results({ comparison, stale }: { comparison: Comparison; stale: boolean
         {plural(nights, "night")} · {plural(travelers, "traveler")} · totals in {currency} · amounts are for the
         whole party
       </p>
+      {comparison.budget !== null && <BudgetSummary comparison={comparison} />}
       {stale && (
         <p className={styles.notice} role="status">
           You changed the trip after this comparison. Select Compare estimates to update it.
@@ -339,6 +360,7 @@ function Results({ comparison, stale }: { comparison: Comparison; stale: boolean
             nights={nights}
             jointLowest={jointLowest}
             ratesAvailable={rates?.available ?? true}
+            budgetConverted={comparison.converted_budget !== null}
           />
         ))}
       </div>
@@ -351,6 +373,27 @@ function Results({ comparison, stale }: { comparison: Comparison; stale: boolean
         accommodation only, not a full trip budget.
       </p>
     </section>
+  );
+}
+
+// BudgetSummary shows the budget as entered and in the comparison currency,
+// and says why no destination is checked when it could not be converted.
+function BudgetSummary({ comparison: c }: { comparison: Comparison }) {
+  const ratesAvailable = c.exchange_rates?.available ?? true;
+  return (
+    <>
+      <p className={styles.summary}>
+        Trip budget: {c.budget_currency} {c.budget}
+        <Converted from={c.budget_currency} to={c.currency} known value={c.converted_budget} />
+      </p>
+      {c.converted_budget === null && (
+        <p className={styles.notice}>
+          {ratesAvailable
+            ? `There is no ECB reference rate to convert your budget to ${c.currency}, so no destination is checked against it.`
+            : `Exchange rates are unavailable right now, so your budget could not be converted to ${c.currency} and no destination is checked against it.`}
+        </p>
+      )}
+    </>
   );
 }
 
@@ -386,12 +429,14 @@ function DestinationCard({
   nights,
   jointLowest,
   ratesAvailable,
+  budgetConverted,
 }: {
   destination: DestinationEstimate;
   currency: string;
   nights: number;
   jointLowest: boolean;
   ratesAvailable: boolean;
+  budgetConverted: boolean;
 }) {
   const nightly =
     d.nightly_stay_estimate === null ? "unknown" : `${d.nightly_stay_estimate_currency} ${d.nightly_stay_estimate}`;
@@ -443,9 +488,54 @@ function DestinationCard({
           <dd>{amount(currency, d.flight_and_stay_estimate)}</dd>
         </div>
       </dl>
+      <BudgetLine destination={d} currency={currency} budgetConverted={budgetConverted} />
       {!d.complete && incomplete && <p className={styles.missing}>{incomplete}</p>}
     </article>
   );
+}
+
+// BudgetLine says how a destination compares with the budget, with the
+// difference the API returned. When the budget itself was not converted,
+// BudgetSummary explains why nothing is checked.
+function BudgetLine({
+  destination: d,
+  currency,
+  budgetConverted,
+}: {
+  destination: DestinationEstimate;
+  currency: string;
+  budgetConverted: boolean;
+}) {
+  switch (d.budget_status) {
+    case "within":
+      return (
+        <p className={styles.budget}>
+          Leaves {currency} {d.budget_difference} of your budget for everything else.
+        </p>
+      );
+    case "over":
+      return (
+        <p className={`${styles.budget} ${styles.over}`}>
+          {currency} {d.budget_difference} over your budget on flights and stay alone.
+        </p>
+      );
+    case "over_at_least": {
+      // An incomplete destination has at most one converted part, and that is
+      // the part the API checked.
+      const part = d.converted_flight_estimate !== null ? "flights" : "the stay";
+      return (
+        <p className={`${styles.budget} ${styles.over}`}>
+          At least {currency} {d.budget_difference} over your budget on {part} alone.
+        </p>
+      );
+    }
+    case "unknown":
+      return budgetConverted ? (
+        <p className={styles.budget}>Your budget can be checked once this destination has a total.</p>
+      ) : null;
+    case "not_set":
+      return null;
+  }
 }
 
 // Converted shows a known amount in the comparison currency, below the
@@ -511,6 +601,8 @@ function toRequest(draft: Draft): ComparisonRequest {
     check_out: draft.checkOut,
     travelers: draft.travelers,
     currency: draft.currency,
+    budget: optionalAmount(draft.budget),
+    budget_currency: draft.budgetCurrency ?? draft.currency,
     destinations: draft.destinations.map((d) => ({
       label: d.label,
       flight_estimate: optionalAmount(d.flight),
@@ -521,7 +613,8 @@ function toRequest(draft: Draft): ComparisonRequest {
   };
 }
 
-// A blank estimate is unknown. The API validates everything else.
+// A blank estimate is unknown, and a blank budget is not set. The API
+// validates everything else.
 function optionalAmount(value: string): string | null {
   const trimmed = value.trim();
   return trimmed === "" ? null : trimmed;

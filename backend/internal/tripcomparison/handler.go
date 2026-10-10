@@ -24,7 +24,7 @@ type errorResponse struct {
 	FieldErrors []FieldError `json:"field_errors,omitempty"`
 }
 
-// Handler serves trip comparison requests, converting estimates with rates
+// Handler serves trip comparison requests, converting amounts with rates
 // from the given source. Register it on its path without a method pattern:
 // it answers every method itself so that all of its responses, including
 // 405, are JSON.
