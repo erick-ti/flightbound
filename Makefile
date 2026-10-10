@@ -1,6 +1,6 @@
 .PHONY: smoke
 # One verification entrypoint shared by the developer, agents, and CI.
-# Replace the stub once the project has runnable behavior: build, import, invoke,
-# or start it as appropriate, exercise one real path, and fail on error.
+# Checks and tests the Go backend, builds both apps, starts them on local
+# test ports, and exercises the comparison page and API through Next.js.
 smoke:
-	@echo "smoke: no real check yet; replace this stub with one real project check" && exit 1
+	@bash scripts/smoke.sh
