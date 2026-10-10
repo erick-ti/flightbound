@@ -102,6 +102,43 @@ const checks = [
     },
   ],
   [
+    "destinations are checked against a budget, including one in another currency",
+    async () => {
+      const usd = await compare({
+        ...trip,
+        budget: "1000",
+        destinations: [
+          trip.destinations[0],
+          { label: "Porto", flight_estimate: "800", nightly_stay_estimate: "90" },
+          { label: "Faro", flight_estimate: "1200", nightly_stay_estimate: null },
+        ],
+      });
+      assert.equal(usd.status, 200);
+      assert.equal(usd.body.converted_budget, "1000.00");
+      assert.deepEqual(
+        usd.body.destinations.map((d) => [d.budget_status, d.budget_difference]),
+        [
+          ["within", "24.15"],
+          ["over", "70.00"],
+          ["over_at_least", "200.00"],
+        ],
+      );
+
+      const eur = await compare({ ...trip, budget: "900", budget_currency: "EUR" });
+      assert.equal(eur.status, 200);
+      assert.equal(eur.body.budget, "900.00");
+      assert.equal(eur.body.converted_budget, "1008.54");
+      assert.deepEqual(
+        eur.body.destinations.map((d) => [d.budget_status, d.budget_difference]),
+        [
+          ["within", "32.69"],
+          ["unknown", null],
+        ],
+      );
+      assert.deepEqual(eur.body.exchange_rates, { available: true, date: "2026-10-09", per_euro: { USD: "1.1206" } });
+    },
+  ],
+  [
     "invalid dates and amounts are rejected with field errors",
     async () => {
       const { status, body } = await compare({

@@ -135,6 +135,65 @@ func TestHandlerReturnsConversions(t *testing.T) {
 	}
 }
 
+func TestHandlerReturnsBudgetChecks(t *testing.T) {
+	withBudget := strings.Replace(sampleBody, `"currency": "USD",`, `"currency": "USD", "budget": "900", "budget_currency": "EUR",`, 1)
+	tests := []struct {
+		name         string
+		body         string
+		top          map[string]string
+		destinations []map[string]string
+	}{
+		{
+			"without a budget",
+			sampleBody,
+			map[string]string{"budget": "null", "budget_currency": `"USD"`, "converted_budget": "null"},
+			[]map[string]string{
+				{"budget_status": `"not_set"`, "budget_difference": "null"},
+				{"budget_status": `"not_set"`, "budget_difference": "null"},
+			},
+		},
+		{
+			"with a budget in another currency",
+			withBudget,
+			map[string]string{"budget": `"900.00"`, "budget_currency": `"EUR"`, "converted_budget": `"1008.54"`},
+			[]map[string]string{
+				{"budget_status": `"within"`, "budget_difference": `"32.69"`},
+				{"budget_status": `"unknown"`, "budget_difference": "null"},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := post(t, tt.body)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body %s", rec.Code, rec.Body)
+			}
+			// Raw values pin the wire format: amounts are strings, statuses are
+			// strings, and unknown values are null rather than omitted.
+			var got map[string]json.RawMessage
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("response is not JSON: %v", err)
+			}
+			for key, value := range tt.top {
+				if raw, ok := got[key]; !ok || string(raw) != value {
+					t.Errorf("%s = %s (present %v), want %s", key, raw, ok, value)
+				}
+			}
+			var destinations []map[string]json.RawMessage
+			if err := json.Unmarshal(got["destinations"], &destinations); err != nil || len(destinations) != len(tt.destinations) {
+				t.Fatalf("destinations = %s", got["destinations"])
+			}
+			for i, want := range tt.destinations {
+				for key, value := range want {
+					if raw, ok := destinations[i][key]; !ok || string(raw) != value {
+						t.Errorf("destinations[%d].%s = %s (present %v), want %s", i, key, raw, ok, value)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestHandlerReportsFieldErrors(t *testing.T) {
 	body := strings.Replace(sampleBody, `"check_out": "2027-03-13"`, `"check_out": "2027-03-09"`, 1)
 	body = strings.Replace(body, `"600.10"`, `"12.345"`, 1)
