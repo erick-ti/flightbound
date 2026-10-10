@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Verifies the project end to end: Go formatting, vet, and tests, both
-# builds, then the comparison page and API through a running Next.js server.
-# It uses its own local ports, so it can run next to development servers.
+# Verifies the project end to end: Go formatting, vet, and tests (with the
+# race detector), both builds, then the comparison page and API through a
+# running Next.js server. The API reads exchange rates from the saved ECB
+# file in its test data and never fetches them. It uses its own local ports,
+# so it can run next to development servers.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -38,9 +40,9 @@ cd "$root/backend"
 unformatted="$(gofmt -l .)"
 [ -z "$unformatted" ] || fail "gofmt needed for: $unformatted"
 go vet ./...
-go test ./...
+go test -race ./...
 
-tmp="$(mktemp -d)"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/flightbound-smoke.XXXXXX")"
 api_pid=""
 web_pid=""
 cleanup() {
@@ -64,7 +66,8 @@ cd "$root/frontend"
 API_ORIGIN="$api_origin" npm run build
 
 echo "smoke: starting servers on ports $api_port and $web_port"
-"$tmp/server" -addr "127.0.0.1:${api_port}" >"$tmp/api.log" 2>&1 &
+"$tmp/server" -addr "127.0.0.1:${api_port}" \
+  -fx-rates-file "$root/backend/internal/fxrates/testdata/eurofxref-daily.xml" >"$tmp/api.log" 2>&1 &
 api_pid=$!
 ./node_modules/.bin/next start --hostname 127.0.0.1 --port "$web_port" >"$tmp/web.log" 2>&1 &
 web_pid=$!
