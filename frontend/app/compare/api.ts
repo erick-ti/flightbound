@@ -1,10 +1,12 @@
-// Types and request helper for POST /api/trip-comparisons. The API validates
-// every field, converts amounts, and does all arithmetic. Amounts are decimal
-// strings in the currency named beside them, and null means an estimate is
-// unknown.
+// Types and request helpers for POST /api/trip-comparisons and GET
+// /api/travel-advice/countries. The API validates every field, converts
+// amounts, and does all arithmetic. Amounts are decimal strings in the
+// currency named beside them, and null means an estimate is unknown.
 
 export type DestinationInput = {
   label: string;
+  // An FCDO country slug from the travel advice country list, or null.
+  country: string | null;
   flight_estimate: string | null;
   flight_estimate_currency: string;
   nightly_stay_estimate: string | null;
@@ -41,7 +43,30 @@ export type DestinationEstimate = DestinationInput &
     flight_and_stay_estimate: string | null;
     complete: boolean;
     lowest_estimate: boolean;
+    // null when the destination has no country.
+    travel_advice: TravelAdvice | null;
   };
+
+// FCDO's warnings against travel, as GOV.UK names them. The API lists a
+// country's alerts most severe first.
+export type Alert =
+  | "avoid_all_travel_to_whole_country"
+  | "avoid_all_travel_to_parts"
+  | "avoid_all_but_essential_travel_to_whole_country"
+  | "avoid_all_but_essential_travel_to_parts";
+
+// FCDO travel advice for a destination's country. Times are RFC 3339 in UTC.
+// checked_at is when the API received the advice from GOV.UK, or null when
+// it came from a saved copy.
+export type TravelAdvice = { country_name: string; url: string } & (
+  | { available: true; alerts: Alert[]; updated_at: string; checked_at: string | null }
+  | { available: false; alerts: null; updated_at: null; checked_at: null }
+);
+
+export type Country = {
+  slug: string;
+  name: string;
+};
 
 // The ECB reference rates behind a comparison's conversions.
 export type ExchangeRates = {
@@ -106,6 +131,35 @@ export async function requestComparison(body: ComparisonRequest): Promise<Compar
     return { kind: "failed", message: rejected };
   }
   return { kind: "failed", message: unavailable };
+}
+
+// requestCountries returns the countries with travel advice, or null when
+// they cannot be loaded or signal aborts the request.
+export async function requestCountries(signal: AbortSignal): Promise<Country[] | null> {
+  try {
+    const response = await fetch("/api/travel-advice/countries", { signal });
+    const data: unknown = await response.json();
+    return response.ok && isCountryList(data) ? data.countries : null;
+  } catch {
+    return null;
+  }
+}
+
+function isCountryList(data: unknown): data is { countries: Country[] } {
+  if (typeof data !== "object" || data === null) {
+    return false;
+  }
+  const countries = (data as { countries?: unknown }).countries;
+  return (
+    Array.isArray(countries) &&
+    countries.every(
+      (c: unknown) =>
+        typeof c === "object" &&
+        c !== null &&
+        typeof (c as Country).slug === "string" &&
+        typeof (c as Country).name === "string",
+    )
+  );
 }
 
 function isComparison(data: unknown): data is Comparison {

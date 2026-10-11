@@ -14,11 +14,16 @@ import (
 	"time"
 
 	"github.com/erick-ti/flightbound/backend/internal/fxrates"
+	"github.com/erick-ti/flightbound/backend/internal/traveladvice"
 	"github.com/erick-ti/flightbound/backend/internal/tripcomparison"
 )
 
 // ecbDailyURL is the ECB's daily euro foreign exchange reference rates.
 const ecbDailyURL = "https://www.ecb.europa.eu/stats/eurofxref/eurofxref-daily.xml"
+
+// travelAdviceURL is where the GOV.UK Content API keeps FCDO's travel
+// advice, one content item per country.
+const travelAdviceURL = "https://www.gov.uk/api/content/foreign-travel-advice"
 
 func main() {
 	cfg, err := parseFlags(os.Args[1:])
@@ -33,7 +38,12 @@ func main() {
 		slog.Error("loading exchange rates failed", "err", err)
 		os.Exit(1)
 	}
-	if err := run(cfg.addr, rates); err != nil {
+	advice, err := adviceSource(cfg.adviceDir)
+	if err != nil {
+		slog.Error("loading travel advice failed", "err", err)
+		os.Exit(1)
+	}
+	if err := run(cfg.addr, rates, advice); err != nil {
 		slog.Error("server stopped", "err", err)
 		os.Exit(1)
 	}
@@ -44,6 +54,7 @@ type config struct {
 	ratesURL    string
 	ratesURLSet bool
 	ratesFile   string
+	adviceDir   string
 }
 
 func parseFlags(args []string) (config, error) {
@@ -52,6 +63,7 @@ func parseFlags(args []string) (config, error) {
 	fs.StringVar(&cfg.addr, "addr", "127.0.0.1:8080", "TCP address to listen on")
 	fs.StringVar(&cfg.ratesURL, "fx-rates-url", ecbDailyURL, "URL of the ECB daily euro reference rates")
 	fs.StringVar(&cfg.ratesFile, "fx-rates-file", "", "read exchange rates from this saved ECB daily rates file and never fetch them")
+	fs.StringVar(&cfg.adviceDir, "travel-advice-dir", "", "read travel advice from the saved GOV.UK copies in this directory and never fetch it")
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
 	}
@@ -82,22 +94,38 @@ func ratesSource(file, url string, urlSet bool) (fxrates.Source, error) {
 	return fxrates.Static(rates), nil
 }
 
-func newMux(rates fxrates.Source) *http.ServeMux {
+// adviceSource chooses where travel advice comes from. Saved copies are read
+// once, at startup, and then the server never contacts GOV.UK; otherwise
+// each comparison fetches the advice for its countries.
+func adviceSource(dir string) (traveladvice.Source, error) {
+	if dir == "" {
+		return traveladvice.NewFetcher(travelAdviceURL, traveladvice.NewClient()), nil
+	}
+	advice, err := traveladvice.LoadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	slog.Info("using saved travel advice", "path", dir)
+	return advice, nil
+}
+
+func newMux(rates fxrates.Source, advice traveladvice.Source) *http.ServeMux {
 	mux := http.NewServeMux()
-	// Registered without a method so the handler answers other methods with
-	// its own JSON 405 response.
-	mux.Handle("/api/trip-comparisons", tripcomparison.Handler(rates))
+	// Registered without a method so each handler answers other methods
+	// with its own JSON 405 response.
+	mux.Handle("/api/trip-comparisons", tripcomparison.Handler(rates, advice))
+	mux.Handle("/api/travel-advice/countries", traveladvice.CountriesHandler())
 	return mux
 }
 
 // run serves until SIGINT or SIGTERM, then lets in-flight requests finish.
-func run(addr string, rates fxrates.Source) error {
+func run(addr string, rates fxrates.Source, advice traveladvice.Source) error {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		return err
 	}
 	srv := &http.Server{
-		Handler:           newMux(rates),
+		Handler:           newMux(rates, advice),
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       10 * time.Second,
 		WriteTimeout:      10 * time.Second,

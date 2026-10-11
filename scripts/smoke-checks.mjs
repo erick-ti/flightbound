@@ -1,4 +1,6 @@
-// Checks the comparison page and API through a running Next.js server.
+// Checks the comparison page and API through a running Next.js server. The
+// API serves saved ECB rates and saved GOV.UK travel advice, so nothing here
+// reaches an outside service.
 // Usage: node scripts/smoke-checks.mjs http://127.0.0.1:13000
 import assert from "node:assert/strict";
 
@@ -34,7 +36,116 @@ const checks = [
     async () => {
       const response = await fetch(`${origin}/compare`);
       assert.equal(response.status, 200);
-      assert.match(await response.text(), /Compare trips/);
+      const html = await response.text();
+      assert.match(html, /Compare trips/);
+      assert.match(html, /Country for travel advice/);
+    },
+  ],
+  [
+    "the travel advice country list comes through the web server",
+    async () => {
+      const response = await fetch(`${origin}/api/travel-advice/countries`);
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("cache-control"), "no-store");
+      assert.match(response.headers.get("content-type"), /^application\/json/);
+      const { countries } = await response.json();
+      assert.ok(countries.length > 200, `${countries.length} countries`);
+      assert.deepEqual(
+        countries.find((c) => c.slug === "portugal"),
+        { slug: "portugal", name: "Portugal" },
+      );
+      const slugs = countries.map((c) => c.slug);
+      assert.deepEqual(slugs, [...new Set(slugs)].sort());
+    },
+  ],
+  [
+    "each destination's country gets the saved FCDO advice without changing totals",
+    async () => {
+      const destinations = [
+        { label: "Lisbon", flight_estimate: "600.10", nightly_stay_estimate: "125.25" },
+        { label: "Bangkok", flight_estimate: "1400", nightly_stay_estimate: "60" },
+        { label: "Kyiv", flight_estimate: "450", nightly_stay_estimate: null },
+      ];
+      const countries = ["portugal", "thailand", "ukraine"];
+      const plain = await compare({ ...trip, destinations });
+      const advised = await compare({
+        ...trip,
+        destinations: destinations.map((d, i) => ({ ...d, country: countries[i] })),
+      });
+      assert.equal(advised.status, 200);
+      const page = (slug) => `https://www.gov.uk/foreign-travel-advice/${slug}`;
+      assert.deepEqual(
+        advised.body.destinations.map((d) => d.travel_advice),
+        [
+          { country_name: "Portugal", url: page("portugal"), available: true, alerts: [], updated_at: "2026-08-11T09:21:44Z", checked_at: null },
+          {
+            country_name: "Thailand",
+            url: page("thailand"),
+            available: true,
+            alerts: ["avoid_all_but_essential_travel_to_parts"],
+            updated_at: "2026-09-28T05:10:02Z",
+            checked_at: null,
+          },
+          {
+            country_name: "Ukraine",
+            url: page("ukraine"),
+            available: true,
+            alerts: ["avoid_all_travel_to_parts", "avoid_all_but_essential_travel_to_parts"],
+            updated_at: "2026-10-02T08:30:25Z",
+            checked_at: null,
+          },
+        ],
+      );
+      assert.deepEqual(
+        advised.body.destinations.map((d) => d.country),
+        countries,
+      );
+      const withoutAdvice = advised.body.destinations.map(({ country, travel_advice, ...rest }) => rest);
+      const withoutCountry = plain.body.destinations.map(({ country, travel_advice, ...rest }) => rest);
+      assert.deepEqual(withoutAdvice, withoutCountry);
+    },
+  ],
+  [
+    "advice without a saved copy is unavailable and the rest still shows",
+    async () => {
+      const { status, body } = await compare({
+        ...trip,
+        destinations: [
+          { ...trip.destinations[0], label: "Kabul", country: "afghanistan" },
+          { ...trip.destinations[1], label: "Madrid", country: "spain" },
+        ],
+      });
+      assert.equal(status, 200);
+      const [kabul, madrid] = body.destinations;
+      assert.deepEqual(kabul.travel_advice.alerts, ["avoid_all_travel_to_whole_country"]);
+      assert.equal(kabul.travel_advice.updated_at, "2026-07-30T10:36:13Z");
+      assert.deepEqual(madrid.travel_advice, {
+        country_name: "Spain",
+        url: "https://www.gov.uk/foreign-travel-advice/spain",
+        available: false,
+        alerts: null,
+        updated_at: null,
+        checked_at: null,
+      });
+      assert.equal(madrid.stay_estimate, "270.00");
+    },
+  ],
+  [
+    "destinations without a country get no advice",
+    async () => {
+      const { body } = await compare(trip);
+      assert.ok(body.destinations.every((d) => d.country === null && d.travel_advice === null));
+    },
+  ],
+  [
+    "an unknown country is rejected with a field error",
+    async () => {
+      const { status, body } = await compare({
+        ...trip,
+        destinations: [{ ...trip.destinations[0], country: "atlantis" }, trip.destinations[1]],
+      });
+      assert.equal(status, 422);
+      assert.deepEqual(body.field_errors, [{ field: "destinations[0].country", message: "Choose a country from the list." }]);
     },
   ],
   [

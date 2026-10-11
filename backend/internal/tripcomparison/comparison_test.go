@@ -1,6 +1,7 @@
 package tripcomparison
 
 import (
+	"context"
 	"maps"
 	"path/filepath"
 	"slices"
@@ -64,6 +65,12 @@ func sampleRequest() Request {
 	}
 }
 
+// compare runs Compare for a request without countries, which needs no
+// travel advice source.
+func compare(req Request, rates fxrates.Source) (Comparison, []FieldError) {
+	return Compare(context.Background(), req, rates, nil)
+}
+
 // mustCompare compares a request that converts nothing.
 func mustCompare(t *testing.T, req Request) Comparison {
 	t.Helper()
@@ -72,7 +79,7 @@ func mustCompare(t *testing.T, req Request) Comparison {
 
 func mustCompareWith(t *testing.T, req Request, rates fxrates.Source) Comparison {
 	t.Helper()
-	got, errs := Compare(req, rates)
+	got, errs := compare(req, rates)
 	if len(errs) > 0 {
 		t.Fatalf("Compare returned errors: %+v", errs)
 	}
@@ -168,7 +175,7 @@ func TestCalendarNights(t *testing.T) {
 	for _, tt := range tests {
 		req := sampleRequest()
 		req.CheckIn, req.CheckOut = tt.checkIn, tt.checkOut
-		got, errs := Compare(req, unusedRates{t})
+		got, errs := compare(req, unusedRates{t})
 		if len(errs) > 0 || got.Nights != tt.want {
 			t.Errorf("%s to %s: nights %d, errors %+v; want %d", tt.checkIn, tt.checkOut, got.Nights, errs, tt.want)
 		}
@@ -197,7 +204,7 @@ func TestInvalidDates(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			req := sampleRequest()
 			req.CheckIn, req.CheckOut = tt.checkIn, tt.checkOut
-			_, errs := Compare(req, unusedRates{t})
+			_, errs := compare(req, unusedRates{t})
 			if !slices.Equal(fields(errs), []string{tt.field}) {
 				t.Errorf("errors = %+v, want one error on %s", errs, tt.field)
 			}
@@ -308,7 +315,7 @@ func TestPrecisionFollowsCurrency(t *testing.T) {
 		req.Currency = tt.currency
 		req.Destinations[0].NightlyStayEstimate = strp("125") // valid in both currencies
 		req.Destinations[0].FlightEstimate = strp(tt.amount)
-		_, errs := Compare(req, unusedRates{t})
+		_, errs := compare(req, unusedRates{t})
 		want := []FieldError{{Field: "destinations[0].flight_estimate", Message: tt.message}}
 		if !slices.Equal(errs, want) {
 			t.Errorf("%s %q: errors %+v, want %+v", tt.currency, tt.amount, errs, want)
@@ -339,7 +346,7 @@ func TestValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			req := sampleRequest()
 			tt.modify(&req)
-			got, errs := Compare(req, unusedRates{t})
+			got, errs := compare(req, unusedRates{t})
 			if !slices.Equal(fields(errs), []string{tt.field}) {
 				t.Errorf("errors = %+v, want one error on %s", errs, tt.field)
 			}
@@ -367,7 +374,7 @@ func TestCollectsEveryError(t *testing.T) {
 	req.Travelers = 0
 	req.Destinations[0].FlightEstimate = strp("12.345")
 	req.Destinations[1].Label = ""
-	_, errs := Compare(req, unusedRates{t})
+	_, errs := compare(req, unusedRates{t})
 	want := []string{"check_out", "travelers", "destinations[0].flight_estimate", "destinations[1].label"}
 	if !slices.Equal(fields(errs), want) {
 		t.Errorf("error fields = %v, want %v", fields(errs), want)
@@ -377,7 +384,7 @@ func TestCollectsEveryError(t *testing.T) {
 func TestReportsDestinationErrorsWhenCountIsWrong(t *testing.T) {
 	req := sampleRequest()
 	req.Destinations = []DestinationInput{{Label: "", FlightEstimate: strp("12.345"), NightlyStayEstimate: strp("-1")}}
-	_, errs := Compare(req, unusedRates{t})
+	_, errs := compare(req, unusedRates{t})
 	want := []string{"destinations", "destinations[0].label", "destinations[0].flight_estimate", "destinations[0].nightly_stay_estimate"}
 	if !slices.Equal(fields(errs), want) {
 		t.Errorf("error fields = %v, want %v", fields(errs), want)
@@ -387,7 +394,7 @@ func TestReportsDestinationErrorsWhenCountIsWrong(t *testing.T) {
 func TestValidatesAtMostMaxDestinations(t *testing.T) {
 	req := sampleRequest()
 	req.Destinations = make([]DestinationInput, 50) // every label is blank
-	_, errs := Compare(req, unusedRates{t})
+	_, errs := compare(req, unusedRates{t})
 	want := []string{"destinations", "destinations[0].label", "destinations[1].label", "destinations[2].label"}
 	if !slices.Equal(fields(errs), want) {
 		t.Errorf("error fields = %v, want %v", fields(errs), want)
@@ -612,7 +619,7 @@ func TestAmountCurrencyValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			req := sampleRequest()
 			tt.modify(&req)
-			if _, errs := Compare(req, unusedRates{t}); !slices.Equal(errs, tt.want) {
+			if _, errs := compare(req, unusedRates{t}); !slices.Equal(errs, tt.want) {
 				t.Errorf("errors = %+v, want %+v", errs, tt.want)
 			}
 		})
@@ -670,7 +677,7 @@ func TestConversionOverflowIsReportedForEveryDestination(t *testing.T) {
 		req.Destinations[i].NightlyStayEstimate = strp("999999999999.99")
 		req.Destinations[i].NightlyStayEstimateCurrency = strp("EUR")
 	}
-	_, errs := Compare(req, fixtureRates(t))
+	_, errs := compare(req, fixtureRates(t))
 	want := []FieldError{
 		{"destinations[0].nightly_stay_estimate", "This estimate is too large to convert."},
 		{"destinations[1].nightly_stay_estimate", "This estimate is too large to convert."},
@@ -692,7 +699,7 @@ func TestOverflowOfConvertedPartsSum(t *testing.T) {
 	req.Destinations[0].FlightEstimateCurrency = strp("EUR")
 	req.Destinations[0].NightlyStayEstimate = largest
 	req.Destinations[0].NightlyStayEstimateCurrency = strp("EUR")
-	_, errs := Compare(req, fixtureRates(t))
+	_, errs := compare(req, fixtureRates(t))
 	want := []FieldError{{"destinations[0].flight_estimate", "This estimate is too large to calculate."}}
 	if !slices.Equal(errs, want) {
 		t.Errorf("errors = %+v, want %+v", errs, want)

@@ -1,6 +1,6 @@
 # Trip comparison
 
-The `/compare` page compares two or three destinations for one trip. A traveler enters their own estimates, each in the currency they have it in, and can add a budget for the trip. The Go API at `POST /api/trip-comparisons` validates the amounts, converts them to one comparison currency, does all of the arithmetic, and checks each destination against the budget. The page shows the results exactly as the API returns them.
+The `/compare` page compares two or three destinations for one trip. A traveler enters their own estimates, each in the currency they have it in, and can add a budget for the trip and a country for each destination. The Go API at `POST /api/trip-comparisons` validates the amounts, converts them to one comparison currency, does all of the arithmetic, checks each destination against the budget, and adds the UK government's travel advice for each country. The page shows the results exactly as the API returns them.
 
 Results are the traveler's own estimates. They are not live prices, supplier offers, or a complete trip budget: they cover flights and accommodation only.
 
@@ -16,6 +16,7 @@ Shared by every destination:
 For each destination:
 
 - A name, 1 to 80 characters after surrounding spaces are trimmed.
+- An optional country, chosen from the countries and territories with travel advice, as described under [Travel advice](#travel-advice).
 - A round-trip flight estimate for the whole party.
 - An accommodation estimate per night for the whole party.
 
@@ -75,6 +76,29 @@ Conversions use the European Central Bank's [euro foreign exchange reference rat
 - **No rates.** When no usable rates can be loaded, an estimate that needs converting is unknown in the comparison currency, so its destination has no total and no destination gets the lowest label. A budget that needs converting is unknown too, so no destination is checked against it. When the rates have no entry for a currency, only conversions from or to it are affected: the amounts in that currency, or, when it is the comparison currency, every amount in another currency.
 - **A saved rates file.** Started with `-fx-rates-file <path>`, the API reads a saved copy of the daily rates file once at startup and never downloads rates; the saved copy has no age limit. `make smoke` uses the copy in `backend/internal/fxrates/testdata/`, so checks never contact the ECB. `-fx-rates-url` changes the download address; passing it together with `-fx-rates-file` stops the API at startup.
 
+## Travel advice
+
+A destination can name a country or territory from the list of the UK Foreign, Commonwealth & Development Office (FCDO), which publishes travel advice for British travellers on GOV.UK. The comparison then shows that country's warnings against travel in plain words, when FCDO last updated the advice, when the API checked it, and a link to the full advice. The advice never changes an amount, a budget check, completeness, or the lowest label.
+
+FCDO's alert status lists a country's warnings. The API returns them most severe first, and the page words each one as follows, with the country's name from the list:
+
+| Alert | Page wording |
+| --- | --- |
+| `avoid_all_travel_to_whole_country` | FCDO advises against all travel to {country}. |
+| `avoid_all_travel_to_parts` | FCDO advises against all travel to parts of {country}. |
+| `avoid_all_but_essential_travel_to_whole_country` | FCDO advises against all but essential travel to {country}. |
+| `avoid_all_but_essential_travel_to_parts` | FCDO advises against all but essential travel to parts of {country}. |
+
+A country can have more than one warning, such as warnings for different parts of it. A warning about parts of a country does not say which parts, so the page asks the traveler to check whether the places they plan to visit are affected. With no warning, the page says that FCDO does not advise against travel to any part of the country; the full advice still covers other risks, entry requirements, and health.
+
+- **Source.** The API reads each country's content item from the GOV.UK Content API at `https://www.gov.uk/api/content/foreign-travel-advice/<slug>`, where the slug is the country's identifier in the list, such as `portugal`. GOV.UK content is published under the [Open Government Licence v3.0](https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/), and the page credits it with "Contains public sector information licensed under the Open Government Licence v3.0."
+- **Freshness.** Each comparison fetches the advice for its countries again: one request per distinct country, all at the same time and alongside any exchange-rate download. Nothing is cached, since GOV.UK asks clients to cache this content for at most 10 seconds. The comparison waits at most 5 seconds for the advice. Each request uses a new connection, so a failed request is not retried.
+- **Unavailable advice.** The destination shows "Travel advice unavailable" with a link to GOV.UK when the request fails, takes longer than 5 seconds, or gets any answer but a 200 (redirects are not followed), or when the content is not what the API expects: not a single JSON object, larger than 1 MiB, not travel advice, a page for another country, withdrawn advice, a missing or repeated field, an alert status that is not a list of the four warnings, or an update time that is not RFC 3339. Field names must match exactly. The rest of the comparison is unaffected, and the API never shows advice it did not just receive.
+- **Dates.** `updated_at` is when FCDO last changed the advice (GOV.UK's `public_updated_at`, which GOV.UK gives in UK time); the page shows its date in UK time. `checked_at` is when the API received the advice; the page shows it in the traveler's time zone.
+- **Country list.** `GET /api/travel-advice/countries` serves the countries and territories with travel advice from a copy kept in `backend/internal/traveladvice/countries.json`, in slug order, which is also alphabetical order of the names. When FCDO adds or renames a country, refresh it from `https://www.gov.uk/api/content/foreign-travel-advice`: keep `details.country.slug` and `details.country.name` of every entry in `links.children`, in slug order. Until then a renamed country shows as unavailable. The package tests check the list's shape.
+- **Requests.** GOV.UK receives the API's request for each chosen country, never a request from the traveler's browser.
+- **Saved copies.** Started with `-travel-advice-dir <dir>`, the API reads saved GOV.UK content items, one `<slug>.json` file per country, once at startup and never contacts GOV.UK. A file that is not named after a country in the list or does not parse as that country's advice, or a directory without any saved page, stops the API at startup. A country without a saved copy is unavailable, and `checked_at` is `null`. `make smoke` uses the copies in `backend/internal/traveladvice/testdata/` (Portugal, Thailand, Afghanistan, and Ukraine, as published in October 2026), so checks never contact GOV.UK. These copies contain public sector information licensed under the Open Government Licence v3.0.
+
 ## Money
 
 Amounts are exact. The API reads each amount as a decimal string and keeps it as an integer count of the currency's minor unit (cents, or whole yen). The only rounding is the conversion rule above.
@@ -93,7 +117,7 @@ The table lives in `backend/internal/money/money.go`. The page's currency menus 
 
 ## API
 
-`POST /api/trip-comparisons` takes a JSON body of at most 16 KiB. Amounts are strings, and `null` means unknown. `budget`, `budget_currency`, `flight_estimate_currency`, and `nightly_stay_estimate_currency` are optional. An omitted or `null` budget means none is set, and an omitted or `null` currency means the comparison currency:
+`POST /api/trip-comparisons` takes a JSON body of at most 16 KiB. Amounts are strings, and `null` means unknown. `budget`, `budget_currency`, `country`, `flight_estimate_currency`, and `nightly_stay_estimate_currency` are optional. An omitted or `null` budget means none is set, an omitted or `null` currency means the comparison currency, and an omitted or `null` country means none. A country is a slug from [the country list](#country-list):
 
 ```json
 {
@@ -104,7 +128,7 @@ The table lives in `backend/internal/money/money.go`. The page's currency menus 
   "budget": "900",
   "budget_currency": "EUR",
   "destinations": [
-    { "label": "Lisbon", "flight_estimate": "600.10", "nightly_stay_estimate": "110", "nightly_stay_estimate_currency": "EUR" },
+    { "label": "Lisbon", "country": "portugal", "flight_estimate": "600.10", "nightly_stay_estimate": "110", "nightly_stay_estimate_currency": "EUR" },
     { "label": "Porto", "flight_estimate": null, "nightly_stay_estimate": "90" }
   ]
 }
@@ -131,6 +155,7 @@ A `200` response repeats the inputs in canonical form, with every estimate's cur
   "destinations": [
     {
       "label": "Lisbon",
+      "country": "portugal",
       "flight_estimate": "600.10",
       "flight_estimate_currency": "USD",
       "nightly_stay_estimate": "110.00",
@@ -142,10 +167,19 @@ A `200` response repeats the inputs in canonical form, with every estimate's cur
       "complete": true,
       "lowest_estimate": false,
       "budget_status": "within",
-      "budget_difference": "38.64"
+      "budget_difference": "38.64",
+      "travel_advice": {
+        "country_name": "Portugal",
+        "url": "https://www.gov.uk/foreign-travel-advice/portugal",
+        "available": true,
+        "alerts": [],
+        "updated_at": "2026-08-11T09:21:44Z",
+        "checked_at": "2026-10-11T02:00:00Z"
+      }
     },
     {
       "label": "Porto",
+      "country": null,
       "flight_estimate": null,
       "flight_estimate_currency": "USD",
       "nightly_stay_estimate": "90.00",
@@ -157,7 +191,8 @@ A `200` response repeats the inputs in canonical form, with every estimate's cur
       "complete": false,
       "lowest_estimate": false,
       "budget_status": "unknown",
-      "budget_difference": null
+      "budget_difference": null,
+      "travel_advice": null
     }
   ]
 }
@@ -168,14 +203,27 @@ A `200` response repeats the inputs in canonical form, with every estimate's cur
 - `budget` is in `budget_currency`, which is always given. `converted_budget` is the budget in the comparison currency: the same amount when no conversion was needed, and `null` when no budget is set or it could not be converted.
 - `budget_status` is `not_set`, `unknown`, `within`, `over`, or `over_at_least`, as described under [Budget](#budget). `budget_difference` is in the comparison currency: the amount left for `within`, the amount over for `over`, the least amount over for `over_at_least`, and `null` otherwise.
 - `exchange_rates` is `null` when nothing needed converting. Otherwise `available` says whether usable rates were loaded, `date` is their reference date (`null` when unavailable), and `per_euro` lists each currency other than the euro that a conversion used, with its rate exactly as the ECB published it.
+- `travel_advice` is `null` when the destination has no country. Otherwise `country_name` and `url` name the country and its advice page on GOV.UK, and `available` says whether current advice was received. When it was, `alerts` lists the warnings most severe first (empty when there are none), and `updated_at` and `checked_at` are RFC 3339 times in UTC, with `checked_at` `null` for a saved copy. When it was not, `alerts`, `updated_at`, and `checked_at` are `null`. See [Travel advice](#travel-advice).
 
 Errors are JSON objects with a `message`:
 
 | Status | When |
 | --- | --- |
-| 400 | The body is not one JSON object of the expected shape: malformed JSON, unknown fields, wrong types (such as an amount sent as a number), or extra data after the object. |
+| 400 | The body is not one JSON object of the expected shape: malformed JSON, unknown fields, wrong types (such as an amount sent as a number, or a country that is not a string), or extra data after the object. |
 | 405 | Any method other than POST. The response includes `Allow: POST`. |
 | 413 | The body is larger than 16 KiB. |
-| 422 | One or more fields are invalid. `field_errors` lists every problem as `{ "field", "message" }`, where `field` is a JSON path such as `check_out`, `destinations[1].flight_estimate`, or `destinations[0].nightly_stay_estimate_currency`. An estimate or the budget is checked against its own currency, and only when that currency is valid. An estimate too large to convert is reported on its own field, a budget too large to convert on `budget`, and a flight + stay total too large to add up on `flight_estimate`. These are reported only once every field is otherwise valid. When more than three destinations are sent, only the first three are checked. |
+| 422 | One or more fields are invalid. `field_errors` lists every problem as `{ "field", "message" }`, where `field` is a JSON path such as `check_out`, `destinations[1].flight_estimate`, or `destinations[0].nightly_stay_estimate_currency`. A country that is not in the list is reported on `destinations[i].country`. An estimate or the budget is checked against its own currency, and only when that currency is valid. An estimate too large to convert is reported on its own field, a budget too large to convert on `budget`, and a flight + stay total too large to add up on `flight_estimate`. These are reported only once every field is otherwise valid. When more than three destinations are sent, only the first three are checked. |
 
-Every response from this path sets `Cache-Control: no-store`. Requests to unknown paths get the router's plain-text 404.
+A field error found before the calculation stops the request before any travel advice is fetched. The too-large errors are found during the calculation, after the advice requests have started, and those requests are then cancelled.
+
+### Country list
+
+`GET /api/travel-advice/countries` returns the countries and territories with travel advice, in slug order:
+
+```json
+{ "countries": [{ "slug": "afghanistan", "name": "Afghanistan" }, { "slug": "albania", "name": "Albania" }] }
+```
+
+Any method other than GET or HEAD gets a 405 with `Allow: GET, HEAD`.
+
+Every response from these paths sets `Cache-Control: no-store`. Requests to unknown paths get the router's plain-text 404.

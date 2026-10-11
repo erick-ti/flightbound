@@ -436,7 +436,7 @@ func TestBudgetValidation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			req := sampleRequest()
 			tt.modify(&req)
-			got, errs := Compare(req, unusedRates{t})
+			got, errs := compare(req, unusedRates{t})
 			if !slices.Equal(errs, tt.want) {
 				t.Errorf("errors = %+v, want %+v", errs, tt.want)
 			}
@@ -468,7 +468,7 @@ func TestBudgetConversionOverflowIsReported(t *testing.T) {
 	req.BudgetCurrency = strp("EUR")
 	req.Destinations[0].FlightEstimate = strp("999999999.99")
 	req.Destinations[0].FlightEstimateCurrency = strp("EUR")
-	_, errs := Compare(req, fxrates.Static(huge))
+	_, errs := compare(req, fxrates.Static(huge))
 	want := []FieldError{
 		{"budget", "This budget is too large to convert."},
 		{"destinations[0].flight_estimate", "This estimate is too large to convert."},
