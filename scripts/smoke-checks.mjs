@@ -1,6 +1,6 @@
 // Checks the comparison page and API through a running Next.js server. The
-// API serves saved ECB rates and saved GOV.UK travel advice, so nothing here
-// reaches an outside service.
+// API serves saved ECB rates, saved GOV.UK travel advice and climate normals
+// saved in the repository, so nothing here reaches an outside service.
 // Usage: node scripts/smoke-checks.mjs http://127.0.0.1:13000
 import assert from "node:assert/strict";
 
@@ -146,6 +146,90 @@ const checks = [
       });
       assert.equal(status, 422);
       assert.deepEqual(body.field_errors, [{ field: "destinations[0].country", message: "Choose a country from the list." }]);
+    },
+  ],
+  [
+    "the compare page offers a place for typical weather",
+    async () => {
+      const html = await (await fetch(`${origin}/compare`)).text();
+      assert.match(html, /Place for typical weather/);
+      assert.match(html, /Not listed/);
+    },
+  ],
+  [
+    "the place list comes through the web server",
+    async () => {
+      const response = await fetch(`${origin}/api/places`);
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("cache-control"), "no-store");
+      assert.match(response.headers.get("content-type"), /^application\/json/);
+      const { places } = await response.json();
+      assert.ok(places.length >= 25, `${places.length} places`);
+      assert.deepEqual(
+        places.find((p) => p.id === "lisbon"),
+        { id: "lisbon", name: "Lisbon", country: "portugal", country_name: "Portugal" },
+      );
+      const names = places.map((p) => p.name);
+      assert.deepEqual(names, [...names].sort());
+    },
+  ],
+  [
+    "a place sets the country and adds typical weather without changing totals",
+    async () => {
+      const plain = await compare(trip);
+      const placed = await compare({
+        ...trip,
+        destinations: [{ ...trip.destinations[0], place: "lisbon" }, trip.destinations[1]],
+      });
+      assert.equal(placed.status, 200);
+      const [lisbon, porto] = placed.body.destinations;
+      assert.equal(lisbon.place, "lisbon");
+      assert.equal(lisbon.country, "portugal");
+      assert.equal(lisbon.travel_advice.updated_at, "2026-08-11T09:21:44Z");
+      const { place_name, period_start, period_end, months } = lisbon.climate;
+      assert.deepEqual([place_name, period_start, period_end], ["Lisbon", 1991, 2020]);
+      // The trip is 10 to 13 March.
+      assert.deepEqual(months.map((m) => m.month), [3]);
+      const [march] = months;
+      for (const key of ["high_c", "high_f", "low_c", "low_f", "precipitation_mm"]) {
+        assert.ok(Number.isInteger(march[key]), `${key} ${march[key]}`);
+      }
+      assert.ok(march.high_c >= march.low_c && march.high_f >= march.low_f, JSON.stringify(march));
+      assert.match(march.precipitation_in, /^\d+\.\d$/);
+      assert.equal(porto.climate, null);
+      const strip = ({ place, country, travel_advice, climate, ...rest }) => rest;
+      assert.deepEqual(placed.body.destinations.map(strip), plain.body.destinations.map(strip));
+    },
+  ],
+  [
+    "a country that does not match the place is rejected with a field error",
+    async () => {
+      const { status, body } = await compare({
+        ...trip,
+        destinations: [{ ...trip.destinations[0], place: "lisbon", country: "spain" }, trip.destinations[1]],
+      });
+      assert.equal(status, 422);
+      assert.deepEqual(body.field_errors, [
+        { field: "destinations[0].country", message: "This place is in Portugal. Choose Portugal or leave the country empty." },
+      ]);
+    },
+  ],
+  [
+    "an unknown place is rejected with a field error",
+    async () => {
+      const { status, body } = await compare({
+        ...trip,
+        destinations: [{ ...trip.destinations[0], place: "atlantis" }, trip.destinations[1]],
+      });
+      assert.equal(status, 422);
+      assert.deepEqual(body.field_errors, [{ field: "destinations[0].place", message: "Choose a place from the list." }]);
+    },
+  ],
+  [
+    "destinations without a place get no typical weather",
+    async () => {
+      const { body } = await compare(trip);
+      assert.ok(body.destinations.every((d) => d.place === null && d.climate === null));
     },
   ],
   [

@@ -1,7 +1,8 @@
 // Package tripcomparison compares flight-plus-stay estimates for two or
 // three destinations that share dates and a party size, checks each against
-// an optional trip budget, and adds FCDO travel advice for any destination
-// with a country.
+// an optional trip budget, adds FCDO travel advice for any destination with
+// a country, and adds typical weather for any destination with a place. A
+// place sets its destination's country.
 //
 // Every amount is a traveler-entered figure for the whole party, in a
 // supported currency of its own. This package validates the amounts,
@@ -19,6 +20,7 @@ import (
 
 	"github.com/erick-ti/flightbound/backend/internal/fxrates"
 	"github.com/erick-ti/flightbound/backend/internal/money"
+	"github.com/erick-ti/flightbound/backend/internal/places"
 	"github.com/erick-ti/flightbound/backend/internal/traveladvice"
 )
 
@@ -53,6 +55,10 @@ type Request struct {
 // currency means the comparison currency.
 type DestinationInput struct {
 	Label string `json:"label"`
+	// Place is the ID of a supported place, such as "lisbon"; nil means
+	// none. A place sets the country, so Country must then be nil or the
+	// place's country.
+	Place *string `json:"place"`
 	// Country is the FCDO country slug for travel advice, such as
 	// "portugal"; nil means none.
 	Country *string `json:"country"`
@@ -104,6 +110,7 @@ type ExchangeRates struct {
 // DestinationEstimate is one destination's calculated estimate.
 type DestinationEstimate struct {
 	Label                       string  `json:"label"`
+	Place                       *string `json:"place"`
 	Country                     *string `json:"country"`
 	FlightEstimate              *string `json:"flight_estimate"`
 	FlightEstimateCurrency      string  `json:"flight_estimate_currency"`
@@ -134,6 +141,11 @@ type DestinationEstimate struct {
 	// has no country. It never changes an amount, a budget status, or the
 	// lowest label.
 	TravelAdvice *TravelAdvice `json:"travel_advice"`
+	// Climate is the typical weather at Place for each calendar month of
+	// the stay, or nil when the destination has no place or the place has
+	// no normals. It never changes an amount, a budget status, or the
+	// lowest label.
+	Climate *Climate `json:"climate"`
 }
 
 // BudgetStatus is the result of checking a destination against the budget.
@@ -172,10 +184,11 @@ type FieldError struct {
 // For a valid request, it asks advice once for each distinct country, all
 // at the same time and alongside the calculation, and waits at most
 // adviceTimeout for them. A nil advice source leaves every country's advice
-// unavailable.
+// unavailable. Typical weather comes from the saved climate normals for the
+// months of the stay and needs no request.
 func Compare(ctx context.Context, req Request, rates fxrates.Source, advice traveladvice.Source) (Comparison, []FieldError) {
 	var v validator
-	nights := v.nights(req.CheckIn, req.CheckOut)
+	checkIn, nights := v.stay(req.CheckIn, req.CheckOut)
 	if req.Travelers < MinTravelers || req.Travelers > MaxTravelers {
 		v.add("travelers", fmt.Sprintf("Choose from %d to %d travelers.", MinTravelers, MaxTravelers))
 	}
@@ -201,6 +214,12 @@ func Compare(ctx context.Context, req Request, rates fxrates.Source, advice trav
 	defer cancel()
 	lookup := lookUpAdvice(ctx, advice, parsed)
 	result, errs := calculate(req, cur, nights, b, parsed, rates)
+	if len(errs) == 0 {
+		months := stayMonths(checkIn, nights)
+		for i, d := range parsed {
+			result.Destinations[i].Climate = climateFor(climateNormals, d.place, months)
+		}
+	}
 	if len(errs) > 0 {
 		cancel()
 		lookup.wait()
@@ -221,6 +240,7 @@ type budget struct {
 // their own currencies.
 type destination struct {
 	label      string
+	place      *places.Place
 	country    *traveladvice.Country
 	flight     *int64
 	flightCur  money.Currency
@@ -236,13 +256,13 @@ func (v *validator) add(field, message string) {
 	v.errs = append(v.errs, FieldError{Field: field, Message: message})
 }
 
-// nights returns the number of calendar nights between the two dates, or 0
-// after recording an error.
-func (v *validator) nights(checkIn, checkOut string) int {
+// stay returns the check-in date and the number of calendar nights between
+// the two dates, or 0 nights after recording an error.
+func (v *validator) stay(checkIn, checkOut string) (time.Time, int) {
 	in, inOK := v.date("check_in", "check-in", checkIn)
 	out, outOK := v.date("check_out", "check-out", checkOut)
 	if !inOK || !outOK {
-		return 0
+		return in, 0
 	}
 	// Dates without a time parse as midnight UTC, so the difference is a
 	// whole number of days whatever time zone the traveler is in.
@@ -250,12 +270,12 @@ func (v *validator) nights(checkIn, checkOut string) int {
 	switch {
 	case nights < 1:
 		v.add("check_out", "Check-out must be after check-in.")
-		return 0
+		return in, 0
 	case nights > MaxNights:
 		v.add("check_out", fmt.Sprintf("Stays can be at most %d nights.", MaxNights))
-		return 0
+		return in, 0
 	}
-	return int(nights)
+	return in, int(nights)
 }
 
 func (v *validator) date(field, name, value string) (time.Time, bool) {
@@ -282,7 +302,22 @@ func (v *validator) destination(i int, d DestinationInput, cur money.Currency, c
 		v.add(prefix+"label", fmt.Sprintf("Use at most %d characters.", MaxLabelLength))
 	}
 	parsed := destination{label: label}
-	if d.Country != nil {
+	if d.Place != nil {
+		if p, ok := places.Lookup(*d.Place); ok {
+			parsed.place = &p
+		} else {
+			v.add(prefix+"place", "Choose a place from the list.")
+		}
+	}
+	switch {
+	case parsed.place != nil:
+		// The places list only holds places whose country has advice.
+		c, _ := traveladvice.Lookup(parsed.place.Country)
+		if d.Country != nil && *d.Country != c.Slug {
+			v.add(prefix+"country", fmt.Sprintf("This place is in %s. Choose %s or leave the country empty.", c.Name, c.Name))
+		}
+		parsed.country = &c
+	case d.Country != nil:
 		if c, ok := traveladvice.Lookup(*d.Country); ok {
 			parsed.country = &c
 		} else {
@@ -382,6 +417,7 @@ func calculate(req Request, cur money.Currency, nights int, b budget, parsed []d
 		field := func(name string) string { return fmt.Sprintf("destinations[%d].%s", i, name) }
 		estimate := DestinationEstimate{
 			Label:                       d.label,
+			Place:                       placeID(d.place),
 			FlightEstimate:              format(d.flightCur, d.flight),
 			FlightEstimateCurrency:      d.flightCur.Code,
 			NightlyStayEstimate:         format(d.nightlyCur, d.nightly),
@@ -537,4 +573,11 @@ func format(cur money.Currency, minor *int64) *string {
 	}
 	s := cur.Format(*minor)
 	return &s
+}
+
+func placeID(p *places.Place) *string {
+	if p == nil {
+		return nil
+	}
+	return &p.ID
 }

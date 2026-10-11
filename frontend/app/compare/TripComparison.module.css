@@ -56,6 +56,12 @@
   gap: 1rem;
 }
 
+/* A destination's place fields and cost fields are separate rows. Keeping
+   empty columns keeps every field the same width, so the two rows line up. */
+.aligned {
+  grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr));
+}
+
 .field {
   display: grid;
   align-content: start;
@@ -284,7 +290,9 @@
   color: #52606d;
 }
 
-/* Travel advice sits apart from the estimates; it never changes a total. */
+/* Typical weather and travel advice sit apart from the estimates; neither
+   changes a total. */
+.climate,
 .advice {
   margin: 0.75rem 0 0;
   padding-top: 0.75rem;
@@ -292,10 +300,12 @@
   border-top: 1px solid #d9e2ec;
 }
 
+.climate p,
 .advice p {
   margin: 0.25rem 0 0;
 }
 
+.climate p:first-child,
 .advice p:first-child {
   margin-top: 0;
 }

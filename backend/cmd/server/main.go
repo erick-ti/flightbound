@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/erick-ti/flightbound/backend/internal/fxrates"
+	"github.com/erick-ti/flightbound/backend/internal/places"
 	"github.com/erick-ti/flightbound/backend/internal/traveladvice"
 	"github.com/erick-ti/flightbound/backend/internal/tripcomparison"
 )
@@ -115,6 +116,7 @@ func newMux(rates fxrates.Source, advice traveladvice.Source) *http.ServeMux {
 	// with its own JSON 405 response.
 	mux.Handle("/api/trip-comparisons", tripcomparison.Handler(rates, advice))
 	mux.Handle("/api/travel-advice/countries", traveladvice.CountriesHandler())
+	mux.Handle("/api/places", places.Handler())
 	return mux
 }
 

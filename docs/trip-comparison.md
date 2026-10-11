@@ -1,6 +1,6 @@
 # Trip comparison
 
-The `/compare` page compares two or three destinations for one trip. A traveler enters their own estimates, each in the currency they have it in, and can add a budget for the trip and a country for each destination. The Go API at `POST /api/trip-comparisons` validates the amounts, converts them to one comparison currency, does all of the arithmetic, checks each destination against the budget, and adds the UK government's travel advice for each country. The page shows the results exactly as the API returns them.
+The `/compare` page compares two or three destinations for one trip. A traveler enters their own estimates, each in the currency they have it in, and can add a budget for the trip and, for each destination, a place from a short list or a country. The Go API at `POST /api/trip-comparisons` validates the amounts, converts them to one comparison currency, does all of the arithmetic, checks each destination against the budget, adds the UK government's travel advice for each country, and adds the typical weather of each place for the months of the stay. The page shows the results exactly as the API returns them.
 
 Results are the traveler's own estimates. They are not live prices, supplier offers, or a complete trip budget: they cover flights and accommodation only.
 
@@ -16,7 +16,8 @@ Shared by every destination:
 For each destination:
 
 - A name, 1 to 80 characters after surrounding spaces are trimmed.
-- An optional country, chosen from the countries and territories with travel advice, as described under [Travel advice](#travel-advice).
+- An optional place, chosen from the supported places, as described under [Places and typical weather](#places-and-typical-weather). A place sets the destination's country.
+- An optional country, chosen from the countries and territories with travel advice, as described under [Travel advice](#travel-advice). With a place, the country is the place's.
 - A round-trip flight estimate for the whole party.
 - An accommodation estimate per night for the whole party.
 
@@ -99,6 +100,22 @@ A country can have more than one warning, such as warnings for different parts o
 - **Requests.** GOV.UK receives the API's request for each chosen country, never a request from the traveler's browser.
 - **Saved copies.** Started with `-travel-advice-dir <dir>`, the API reads saved GOV.UK content items, one `<slug>.json` file per country, once at startup and never contacts GOV.UK. A file that is not named after a country in the list or does not parse as that country's advice, or a directory without any saved page, stops the API at startup. A country without a saved copy is unavailable, and `checked_at` is `null`. `make smoke` uses the copies in `backend/internal/traveladvice/testdata/` (Portugal, Thailand, Afghanistan, and Ukraine, as published in October 2026), so checks never contact GOV.UK. These copies contain public sector information licensed under the Open Government Licence v3.0.
 
+## Places and typical weather
+
+A destination can name one of the supported places, such as Lisbon or Bangkok. The place sets the destination's country for travel advice, and the comparison adds the place's typical weather for each calendar month that the stay's nights fall in (from the check-in night to the night before check-out), in the order the stay reaches them. Destinations that are not on the list keep a free-text name and an optional country. Typical weather never changes an amount, a budget check, completeness, the lowest label, or the travel advice.
+
+For each month the page shows one sentence, such as "Typical weather in Lisbon in October: highs 21 °C (70 °F), lows 16 °C (60 °F), about 81 mm (3.2 in) of precipitation." When the precipitation rounds to 0 mm it says "less than 1 mm of precipitation", and when only the inches round to 0.0 it says "less than 0.1 in".
+
+- **The places.** `backend/internal/places/places.json` lists each place's ID, display name, FCDO country slug, latitude and longitude (4 decimal places), its climate point (`climate_latitude` and `climate_longitude`, described below), and the Natural Earth feature it came from (`source_id`). The coordinates were copied by a script from Natural Earth's populated places (`ne_10m_populated_places_simple.geojson` in release v5.1.2 of [natural-earth-vector](https://github.com/nvkelso/natural-earth-vector), public domain), taken from each feature's point geometry. IDs are lowercase ASCII words joined by hyphens and never change once published. There are no UK places, because FCDO publishes no advice for the UK. The package tests check the file's shape, that IDs are unique, that the list is in name order, that every country is in the travel advice list, and that each climate point lies on the 0.1 degree grid within 0.3 degrees of its place.
+- **What the figures are.** Normals for 1991 to 2020: the average daily high and the average daily low, and the average total precipitation for the month (rain and snow, with snow counted as melted water). They describe a land area about 9 km wide near the place, its climate point, so they can differ from a weather station in the city, most on coasts and in mountains; daytime highs in coastal cities can come out a few degrees low. They are not a forecast.
+- **Source.** [ERA5 Land hourly time-series data from 1950 to present](https://doi.org/10.24381/ee82e357) from the Copernicus Climate Data Store: hourly 2 m air temperature and total precipitation on ERA5-Land's 0.1 degree land grid, read at each place's climate point. The dataset is licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/), and the page credits it with "The results contain modified Copernicus Climate Change Service information 2026. Neither the European Commission nor ECMWF is responsible for any use that may be made of the Copernicus information or data it contains."
+- **Climate points.** A place's climate point is the point of ERA5-Land's 0.1 degree grid nearest the place, by great-circle distance, that is at least half land in ECMWF's [ERA5-Land land-sea mask](https://confluence.ecmwf.int/display/CKB/ERA5-Land%3A+data+documentation) and that ERA5-Land covers. The nearest grid point itself can be mostly sea, which flattens daily highs and lows, and ERA5-Land leaves ocean points empty; one point that the mask counts as land, Barcelona's (41.4, 2.2), also came back empty, so Barcelona uses the next one. Ties go to the lower latitude, then the lower longitude. Before adding a place, check that its figures look like land: a day-night swing of several degrees, and highs within 3 °C of the national weather service's normals where they are published.
+- **How they are computed.** Days are local solar days: UTC plus the place's longitude divided by 15, rounded to whole hours, because daily highs and lows follow the sun. A day's high and low are the highest and lowest of its 24 hourly temperatures. Each hourly precipitation value covers the hour ending at its time, and counts toward the day that hour falls in. ECMWF derives those hourly values by subtracting running totals, which leaves rounding residue just below zero, so values down to -0.001 mm count as none. A month's high and low are the means over every day of that month in the 30 years, and its precipitation is the mean of the 30 monthly totals. The results are stored in tenths of a degree Celsius and tenths of a millimetre, rounded with halves away from zero.
+- **Rounding for display.** The API rounds once from the stored tenths, with integer arithmetic and halves away from zero: whole degrees Celsius, whole degrees Fahrenheit (C × 9/5 + 32), whole millimetres, and inches (25.4 mm) to one decimal place.
+- **No figures.** A destination without a place has no typical weather (`climate` is `null`). The package tests require figures for every listed place.
+- **Requests.** The figures are saved in `backend/internal/climate/normals.json`, so a comparison never contacts the Climate Data Store.
+- **Regenerating the figures.** `scripts/climate/download_era5.py` downloads each place's hourly data once, for its climate point. It needs a Climate Data Store account that has accepted the dataset's licence, with the account's token in `~/.cdsapirc`; `--check-token` checks the token and licence without downloading. Each download is one request, logged in `requests.log` in the output directory before it is sent, and `--max-requests` caps the total in that log across runs. The client never retries, so the first failure stops the run, and a rerun skips places already downloaded. Each download is saved as the service sends it: `<place ID>.zip`, a zip archive holding a 2 m temperature file and a precipitation file. Then `cd backend && go run ./cmd/climatenormals -in <dir> -out <candidate>` checks each download (two CSV files of consecutive hours at the place's climate point, with plausible values and none missing), computes the normals, and writes them in one step, recording each download's SHA-256. Check the candidate before writing over `internal/climate/normals.json`, the default output. The same downloads always give the same file. The attribution's year, in `cmd/climatenormals` and in the page footer, is the year of the downloads, so update both when downloading again, together with the Lisbon figures in this document's examples. Test the script with `uv run --locked scripts/climate/test_download_era5.py`; its tests use a local server, never the Climate Data Store.
+
 ## Money
 
 Amounts are exact. The API reads each amount as a decimal string and keeps it as an integer count of the currency's minor unit (cents, or whole yen). The only rounding is the conversion rule above.
@@ -117,7 +134,7 @@ The table lives in `backend/internal/money/money.go`. The page's currency menus 
 
 ## API
 
-`POST /api/trip-comparisons` takes a JSON body of at most 16 KiB. Amounts are strings, and `null` means unknown. `budget`, `budget_currency`, `country`, `flight_estimate_currency`, and `nightly_stay_estimate_currency` are optional. An omitted or `null` budget means none is set, an omitted or `null` currency means the comparison currency, and an omitted or `null` country means none. A country is a slug from [the country list](#country-list):
+`POST /api/trip-comparisons` takes a JSON body of at most 16 KiB. Amounts are strings, and `null` means unknown. `budget`, `budget_currency`, `place`, `country`, `flight_estimate_currency`, and `nightly_stay_estimate_currency` are optional. An omitted or `null` budget means none is set, an omitted or `null` currency means the comparison currency, and an omitted or `null` place or country means none. A place is an ID from [the place list](#place-list), and a country is a slug from [the country list](#country-list). With a place, the country may be omitted, `null`, or the place's own country:
 
 ```json
 {
@@ -128,7 +145,7 @@ The table lives in `backend/internal/money/money.go`. The page's currency menus 
   "budget": "900",
   "budget_currency": "EUR",
   "destinations": [
-    { "label": "Lisbon", "country": "portugal", "flight_estimate": "600.10", "nightly_stay_estimate": "110", "nightly_stay_estimate_currency": "EUR" },
+    { "label": "Lisbon", "place": "lisbon", "flight_estimate": "600.10", "nightly_stay_estimate": "110", "nightly_stay_estimate_currency": "EUR" },
     { "label": "Porto", "flight_estimate": null, "nightly_stay_estimate": "90" }
   ]
 }
@@ -155,6 +172,7 @@ A `200` response repeats the inputs in canonical form, with every estimate's cur
   "destinations": [
     {
       "label": "Lisbon",
+      "place": "lisbon",
       "country": "portugal",
       "flight_estimate": "600.10",
       "flight_estimate_currency": "USD",
@@ -175,10 +193,19 @@ A `200` response repeats the inputs in canonical form, with every estimate's cur
         "alerts": [],
         "updated_at": "2026-08-11T09:21:44Z",
         "checked_at": "2026-10-11T02:00:00Z"
+      },
+      "climate": {
+        "place_name": "Lisbon",
+        "period_start": 1991,
+        "period_end": 2020,
+        "months": [
+          { "month": 3, "high_c": 17, "high_f": 63, "low_c": 11, "low_f": 51, "precipitation_mm": 55, "precipitation_in": "2.2" }
+        ]
       }
     },
     {
       "label": "Porto",
+      "place": null,
       "country": null,
       "flight_estimate": null,
       "flight_estimate_currency": "USD",
@@ -192,7 +219,8 @@ A `200` response repeats the inputs in canonical form, with every estimate's cur
       "lowest_estimate": false,
       "budget_status": "unknown",
       "budget_difference": null,
-      "travel_advice": null
+      "travel_advice": null,
+      "climate": null
     }
   ]
 }
@@ -203,16 +231,18 @@ A `200` response repeats the inputs in canonical form, with every estimate's cur
 - `budget` is in `budget_currency`, which is always given. `converted_budget` is the budget in the comparison currency: the same amount when no conversion was needed, and `null` when no budget is set or it could not be converted.
 - `budget_status` is `not_set`, `unknown`, `within`, `over`, or `over_at_least`, as described under [Budget](#budget). `budget_difference` is in the comparison currency: the amount left for `within`, the amount over for `over`, the least amount over for `over_at_least`, and `null` otherwise.
 - `exchange_rates` is `null` when nothing needed converting. Otherwise `available` says whether usable rates were loaded, `date` is their reference date (`null` when unavailable), and `per_euro` lists each currency other than the euro that a conversion used, with its rate exactly as the ECB published it.
+- `place` is the place's ID, or `null`. With a place, `country` is the place's country.
+- `climate` is `null` when the destination has no place. Otherwise it has `place_name`, the years `period_start` and `period_end` that the figures average, and `months`: one entry for each calendar month that the stay's nights fall in, in the order the stay reaches them, with `month` (1 for January to 12 for December), the integers `high_c`, `high_f`, `low_c`, `low_f`, and `precipitation_mm`, and `precipitation_in` as a decimal string with one decimal place. See [Places and typical weather](#places-and-typical-weather).
 - `travel_advice` is `null` when the destination has no country. Otherwise `country_name` and `url` name the country and its advice page on GOV.UK, and `available` says whether current advice was received. When it was, `alerts` lists the warnings most severe first (empty when there are none), and `updated_at` and `checked_at` are RFC 3339 times in UTC, with `checked_at` `null` for a saved copy. When it was not, `alerts`, `updated_at`, and `checked_at` are `null`. See [Travel advice](#travel-advice).
 
 Errors are JSON objects with a `message`:
 
 | Status | When |
 | --- | --- |
-| 400 | The body is not one JSON object of the expected shape: malformed JSON, unknown fields, wrong types (such as an amount sent as a number, or a country that is not a string), or extra data after the object. |
+| 400 | The body is not one JSON object of the expected shape: malformed JSON, unknown fields, wrong types (such as an amount sent as a number, or a place or country that is not a string), or extra data after the object. |
 | 405 | Any method other than POST. The response includes `Allow: POST`. |
 | 413 | The body is larger than 16 KiB. |
-| 422 | One or more fields are invalid. `field_errors` lists every problem as `{ "field", "message" }`, where `field` is a JSON path such as `check_out`, `destinations[1].flight_estimate`, or `destinations[0].nightly_stay_estimate_currency`. A country that is not in the list is reported on `destinations[i].country`. An estimate or the budget is checked against its own currency, and only when that currency is valid. An estimate too large to convert is reported on its own field, a budget too large to convert on `budget`, and a flight + stay total too large to add up on `flight_estimate`. These are reported only once every field is otherwise valid. When more than three destinations are sent, only the first three are checked. |
+| 422 | One or more fields are invalid. `field_errors` lists every problem as `{ "field", "message" }`, where `field` is a JSON path such as `check_out`, `destinations[1].flight_estimate`, or `destinations[0].nightly_stay_estimate_currency`. A place that is not in the list is reported on `destinations[i].place`, and a country that is not in the list, or that differs from the place's country, on `destinations[i].country`. An estimate or the budget is checked against its own currency, and only when that currency is valid. An estimate too large to convert is reported on its own field, a budget too large to convert on `budget`, and a flight + stay total too large to add up on `flight_estimate`. These are reported only once every field is otherwise valid. When more than three destinations are sent, only the first three are checked. |
 
 A field error found before the calculation stops the request before any travel advice is fetched. The too-large errors are found during the calculation, after the advice requests have started, and those requests are then cancelled.
 
@@ -222,6 +252,16 @@ A field error found before the calculation stops the request before any travel a
 
 ```json
 { "countries": [{ "slug": "afghanistan", "name": "Afghanistan" }, { "slug": "albania", "name": "Albania" }] }
+```
+
+Any method other than GET or HEAD gets a 405 with `Allow: GET, HEAD`.
+
+### Place list
+
+`GET /api/places` returns the supported places in name order, each with its country's slug and name:
+
+```json
+{ "places": [{ "id": "amsterdam", "name": "Amsterdam", "country": "netherlands", "country_name": "Netherlands" }, { "id": "athens", "name": "Athens", "country": "greece", "country_name": "Greece" }] }
 ```
 
 Any method other than GET or HEAD gets a 405 with `Allow: GET, HEAD`.

@@ -4,7 +4,10 @@ import { useEffect, useState, type ReactNode, type SubmitEvent } from "react";
 import {
   requestComparison,
   requestCountries,
+  requestPlaces,
   type Alert,
+  type Climate,
+  type ClimateMonth,
   type Comparison,
   type ComparisonRequest,
   type Country,
@@ -27,9 +30,19 @@ const MAX_DESTINATIONS = 3;
 const ECB_RATES_URL =
   "https://www.ecb.europa.eu/stats/policy_and_exchange_rates/euro_reference_exchange_rates/html/index.en.html";
 const OGL_URL = "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/";
+const ERA5_LAND_DOI_URL = "https://doi.org/10.24381/ee82e357";
+const CC_BY_URL = "https://creativecommons.org/licenses/by/4.0/";
+const MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
 
 type DestinationDraft = {
   label: string;
+  // A place ID from the place list; "" means not listed. A place sets
+  // country to its own country, and the country menu stays locked until
+  // the place is cleared.
+  place: string;
   // An FCDO country slug for travel advice; "" means none.
   country: string;
   flight: string;
@@ -59,6 +72,7 @@ type Outcome =
 
 const blankDestination: DestinationDraft = {
   label: "",
+  place: "",
   country: "",
   flight: "",
   flightCurrency: null,
@@ -80,32 +94,42 @@ export default function TripComparison() {
   const [draft, setDraft] = useState(initialDraft);
   const [pending, setPending] = useState(false);
   const [outcome, setOutcome] = useState<Outcome>({ kind: "none" });
-  const [countries, setCountries] = useState<Country[] | "loading" | "failed">("loading");
-
-  useEffect(() => {
-    let active = true;
-    const controller = new AbortController();
-    // Give up on a slow list after 10 seconds, like a comparison request.
-    const timer = setTimeout(() => controller.abort(), 10_000);
-    requestCountries(controller.signal).then((list) => {
-      clearTimeout(timer);
-      if (active) {
-        setCountries(list ?? "failed");
-      }
-    });
-    return () => {
-      active = false;
-      clearTimeout(timer);
-      controller.abort();
-    };
-  }, []);
+  // The two lists load separately, so either can fail on its own.
+  const countries = useList(requestCountries);
+  const places = useList(requestPlaces);
 
   const errors: Record<string, string> = outcome.kind === "invalid" ? outcome.fieldErrors : {};
   const stale = outcome.kind === "result" && !sameDraft(outcome.submitted, draft);
-  const countryHint =
-    countries === "failed"
-      ? "The country list could not be loaded, so travel advice is off. Reload the page to try again."
-      : "Optional. Shows the UK government's FCDO travel advice for this country.";
+  const placeHint =
+    places === "failed"
+      ? "The place list could not be loaded, so typical weather is off. Reload the page to try again."
+      : "Optional. Shows typical weather for your dates and sets the country for travel advice.";
+
+  function countryHint(destination: DestinationDraft) {
+    if (destination.place !== "") {
+      return "Set by the place. To choose another country, set the place to Not listed.";
+    }
+    if (countries === "failed") {
+      return Array.isArray(places)
+        ? "The country list could not be loaded. Travel advice still works for places from the list. Reload the page to try again."
+        : "The country list could not be loaded, so travel advice is off. Reload the page to try again.";
+    }
+    return "Optional. Shows the UK government's FCDO travel advice for this country.";
+  }
+
+  // countryOptions is the country list, plus the destination's own country
+  // when the list does not have it: a country a place set stays visible
+  // while the list is loading or after it failed, named as the place list
+  // names it.
+  function countryOptions(destination: DestinationDraft): Country[] {
+    const list = Array.isArray(countries) ? countries : [];
+    const own = destination.country;
+    if (own === "" || list.some((c) => c.slug === own)) {
+      return list;
+    }
+    const name = Array.isArray(places) ? places.find((p) => p.country === own)?.country_name : undefined;
+    return [...list, { slug: own, name: name ?? own }];
+  }
 
   function update(patch: Partial<Draft>) {
     setDraft((current) => ({ ...current, ...patch }));
@@ -225,11 +249,12 @@ export default function TripComparison() {
           {draft.destinations.map((destination, i) => {
             const prefix = `destinations[${i}].`;
             const labelPath = `${prefix}label`;
+            const placePath = `${prefix}place`;
             const countryPath = `${prefix}country`;
             return (
               <fieldset key={i} className={styles.group}>
                 <legend>Destination {i + 1}</legend>
-                <div className={styles.grid}>
+                <div className={`${styles.grid} ${styles.aligned}`}>
                   <Field path={labelPath} label="Name" error={errors[labelPath]}>
                     <input
                       {...controlProps(labelPath, errors[labelPath])}
@@ -242,25 +267,52 @@ export default function TripComparison() {
                       }}
                     />
                   </Field>
-                  <Field path={countryPath} label="Country for travel advice" hint={countryHint} error={errors[countryPath]}>
+                  <Field path={placePath} label="Place for typical weather" hint={placeHint} error={errors[placePath]}>
+                    <select
+                      {...controlProps(placePath, errors[placePath], true)}
+                      value={destination.place}
+                      disabled={places === "loading"}
+                      onChange={(e) => {
+                        const place = e.target.value;
+                        const chosen = Array.isArray(places) ? places.find((p) => p.id === place) : undefined;
+                        // Clearing the place keeps the country it set.
+                        updateDestination(i, () => (chosen ? { place, country: chosen.country } : { place }));
+                      }}
+                    >
+                      <option value="">Not listed</option>
+                      {Array.isArray(places) &&
+                        places.map((p) => (
+                          <option key={p.id} value={p.id}>
+                            {p.name}
+                          </option>
+                        ))}
+                    </select>
+                  </Field>
+                  <Field
+                    path={countryPath}
+                    label="Country for travel advice"
+                    hint={countryHint(destination)}
+                    error={errors[countryPath]}
+                  >
                     <select
                       {...controlProps(countryPath, errors[countryPath], true)}
                       value={destination.country}
-                      disabled={countries === "loading"}
+                      disabled={countries === "loading" || destination.place !== ""}
                       onChange={(e) => {
                         const country = e.target.value;
                         updateDestination(i, () => ({ country }));
                       }}
                     >
                       <option value="">None</option>
-                      {Array.isArray(countries) &&
-                        countries.map((c) => (
-                          <option key={c.slug} value={c.slug}>
-                            {c.name}
-                          </option>
-                        ))}
+                      {countryOptions(destination).map((c) => (
+                        <option key={c.slug} value={c.slug}>
+                          {c.name}
+                        </option>
+                      ))}
                     </select>
                   </Field>
+                </div>
+                <div className={`${styles.grid} ${styles.aligned}`}>
                   <AmountField
                     path={`${prefix}flight_estimate`}
                     label="Round-trip flights for the whole party"
@@ -389,6 +441,7 @@ function CurrencyOptions() {
 function Results({ comparison, stale }: { comparison: Comparison; stale: boolean }) {
   const { currency, nights, travelers, exchange_rates: rates } = comparison;
   const jointLowest = comparison.destinations.filter((d) => d.lowest_estimate).length > 1;
+  const climate = comparison.destinations.find((d) => d.climate !== null)?.climate;
   return (
     <section className={styles.results} aria-labelledby="results-heading">
       <h2 id="results-heading">Results</h2>
@@ -426,6 +479,7 @@ function Results({ comparison, stale }: { comparison: Comparison; stale: boolean
           <a href={OGL_URL}>Open Government Licence v3.0</a>.
         </p>
       )}
+      {climate && <ClimateSource climate={climate} />}
       <p className={styles.note}>
         These are your own estimates, not live prices or supplier offers. They cover flights and
         accommodation only, not a full trip budget.
@@ -548,8 +602,62 @@ function DestinationCard({
       </dl>
       <BudgetLine destination={d} currency={currency} budgetConverted={budgetConverted} />
       {!d.complete && incomplete && <p className={styles.missing}>{incomplete}</p>}
+      {d.climate && <ClimateNote climate={d.climate} />}
       {d.travel_advice && <AdviceNote advice={d.travel_advice} />}
     </article>
+  );
+}
+
+// ClimateNote shows the typical weather at a destination's place, one
+// sentence for each month of the stay, with the values the API rounded.
+function ClimateNote({ climate: c }: { climate: Climate }) {
+  return (
+    <div className={styles.climate}>
+      {c.months.map((m) => (
+        <p key={m.month}>{climateText(c.place_name, m)}</p>
+      ))}
+    </div>
+  );
+}
+
+function climateText(place: string, m: ClimateMonth) {
+  return (
+    `Typical weather in ${place} in ${MONTHS[m.month - 1]}: highs ${degrees(m.high_c, m.high_f)}, ` +
+    `lows ${degrees(m.low_c, m.low_f)}, ${precipitation(m)}.`
+  );
+}
+
+// A non-breaking space keeps each number on the same line as its unit.
+function degrees(c: number, f: number) {
+  return `${c}\u00a0°C (${f}\u00a0°F)`;
+}
+
+function precipitation(m: ClimateMonth) {
+  if (m.precipitation_mm === 0) {
+    return "less than 1\u00a0mm of precipitation";
+  }
+  const inches = m.precipitation_in === "0.0" ? "less than 0.1\u00a0in" : `${m.precipitation_in}\u00a0in`;
+  return `about ${m.precipitation_mm}\u00a0mm (${inches}) of precipitation`;
+}
+
+// ClimateSource says what typical weather is and credits its source, as the
+// dataset's CC BY 4.0 licence requires.
+function ClimateSource({ climate: c }: { climate: Climate }) {
+  return (
+    <>
+      <p className={styles.note}>
+        Typical weather is the {c.period_start}-{c.period_end} average for a land area about 9&nbsp;km wide near
+        each place, from ERA5-Land hourly data. Precipitation includes rain and snow, with snow counted as melted
+        water. It is not a forecast, and local weather can differ, especially on coasts and in mountains.
+      </p>
+      <p className={styles.note}>
+        The results contain modified Copernicus Climate Change Service information 2026. Neither the European
+        Commission nor ECMWF is responsible for any use that may be made of the Copernicus information or data it
+        contains. Source:{" "}
+        <a href={ERA5_LAND_DOI_URL}>ERA5 Land hourly time-series data from 1950 to present</a>, licensed
+        under <a href={CC_BY_URL}>CC BY 4.0</a>.
+      </p>
+    </>
   );
 }
 
@@ -724,7 +832,9 @@ function toRequest(draft: Draft): ComparisonRequest {
     budget_currency: draft.budgetCurrency ?? draft.currency,
     destinations: draft.destinations.map((d) => ({
       label: d.label,
-      country: d.country === "" ? null : d.country,
+      // With a place, the API takes the country from the place.
+      place: d.place === "" ? null : d.place,
+      country: d.place !== "" || d.country === "" ? null : d.country,
       flight_estimate: optionalAmount(d.flight),
       flight_estimate_currency: d.flightCurrency ?? draft.currency,
       nightly_stay_estimate: optionalAmount(d.nightly),
@@ -738,6 +848,30 @@ function toRequest(draft: Draft): ComparisonRequest {
 function optionalAmount(value: string): string | null {
   const trimmed = value.trim();
   return trimmed === "" ? null : trimmed;
+}
+
+// useList loads a list once: "loading" until it arrives, then the list, or
+// "failed" when it cannot be loaded. Like a comparison request, it gives up
+// after 10 seconds.
+function useList<T>(request: (signal: AbortSignal) => Promise<T[] | null>): T[] | "loading" | "failed" {
+  const [list, setList] = useState<T[] | "loading" | "failed">("loading");
+  useEffect(() => {
+    let active = true;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10_000);
+    request(controller.signal).then((result) => {
+      clearTimeout(timer);
+      if (active) {
+        setList(result ?? "failed");
+      }
+    });
+    return () => {
+      active = false;
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [request]);
+  return list;
 }
 
 function sameDraft(a: Draft, b: Draft) {
