@@ -1,10 +1,14 @@
-// Types and request helpers for POST /api/trip-comparisons and GET
-// /api/travel-advice/countries. The API validates every field, converts
-// amounts, and does all arithmetic. Amounts are decimal strings in the
-// currency named beside them, and null means an estimate is unknown.
+// Types and request helpers for POST /api/trip-comparisons, GET
+// /api/travel-advice/countries and GET /api/places. The API validates every
+// field, converts amounts, does all arithmetic, and rounds typical weather.
+// Amounts are decimal strings in the currency named beside them, and null
+// means an estimate is unknown.
 
 export type DestinationInput = {
   label: string;
+  // A place ID from the place list, or null. A place sets the country, so
+  // country must then be null or the place's country.
+  place: string | null;
   // An FCDO country slug from the travel advice country list, or null.
   country: string | null;
   flight_estimate: string | null;
@@ -45,7 +49,34 @@ export type DestinationEstimate = DestinationInput &
     lowest_estimate: boolean;
     // null when the destination has no country.
     travel_advice: TravelAdvice | null;
+    // null when the destination has no place, or its place has no typical
+    // weather.
+    climate: Climate | null;
   };
+
+// Typical weather at a destination's place for each calendar month its stay
+// touches, in the order the stay reaches them, averaged over the years from
+// period_start to period_end.
+export type Climate = {
+  place_name: string;
+  period_start: number;
+  period_end: number;
+  months: ClimateMonth[];
+};
+
+// One month's typical weather: the average daily high and low, and the
+// average precipitation (rain and snow, as liquid water) for the whole month.
+export type ClimateMonth = {
+  // 1 for January to 12 for December.
+  month: number;
+  high_c: number;
+  high_f: number;
+  low_c: number;
+  low_f: number;
+  precipitation_mm: number;
+  // Inches with one decimal place, such as "3.5".
+  precipitation_in: string;
+};
 
 // FCDO's warnings against travel, as GOV.UK names them. The API lists a
 // country's alerts most severe first.
@@ -66,6 +97,15 @@ export type TravelAdvice = { country_name: string; url: string } & (
 export type Country = {
   slug: string;
   name: string;
+};
+
+// A supported place. Choosing one sets the destination's country for travel
+// advice (country, named country_name) and shows its typical weather.
+export type Place = {
+  id: string;
+  name: string;
+  country: string;
+  country_name: string;
 };
 
 // The ECB reference rates behind a comparison's conversions.
@@ -158,6 +198,37 @@ function isCountryList(data: unknown): data is { countries: Country[] } {
         c !== null &&
         typeof (c as Country).slug === "string" &&
         typeof (c as Country).name === "string",
+    )
+  );
+}
+
+// requestPlaces returns the supported places in name order, or null when
+// they cannot be loaded or signal aborts the request.
+export async function requestPlaces(signal: AbortSignal): Promise<Place[] | null> {
+  try {
+    const response = await fetch("/api/places", { signal });
+    const data: unknown = await response.json();
+    return response.ok && isPlaceList(data) ? data.places : null;
+  } catch {
+    return null;
+  }
+}
+
+function isPlaceList(data: unknown): data is { places: Place[] } {
+  if (typeof data !== "object" || data === null) {
+    return false;
+  }
+  const places = (data as { places?: unknown }).places;
+  return (
+    Array.isArray(places) &&
+    places.every(
+      (p: unknown) =>
+        typeof p === "object" &&
+        p !== null &&
+        typeof (p as Place).id === "string" &&
+        typeof (p as Place).name === "string" &&
+        typeof (p as Place).country === "string" &&
+        typeof (p as Place).country_name === "string",
     )
   );
 }

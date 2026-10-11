@@ -25,7 +25,9 @@ npm ci
 npm run dev
 ```
 
-The web app forwards `/api/trip-comparisons` and `/api/travel-advice/countries` to the API at `API_ORIGIN` (default `http://127.0.0.1:8080`). `next dev` reads it at startup; `next start` uses the value that was set when `next build` ran.
+The web app forwards `/api/trip-comparisons`, `/api/travel-advice/countries`, and `/api/places` to the API at `API_ORIGIN` (default `http://127.0.0.1:8080`). `next dev` reads it at startup; `next start` uses the value that was set when `next build` ran.
+
+Typical weather for the supported places is saved in the repository, so the API needs no outside service for it. Rebuilding those figures from Copernicus data is described in [docs/trip-comparison.md](docs/trip-comparison.md#places-and-typical-weather); it needs [uv](https://docs.astral.sh/uv/) and a free Climate Data Store account.
 
 Run every check: Go formatting, vet, and tests with the race detector, both builds, and HTTP checks against both apps running on ports 18080 and 13000 (override with `SMOKE_API_PORT` and `SMOKE_WEB_PORT`).
 
@@ -33,4 +35,4 @@ Run every check: Go formatting, vet, and tests with the race detector, both buil
 make smoke
 ```
 
-How the comparison works, including travel advice and the API contract: [docs/trip-comparison.md](docs/trip-comparison.md).
+How the comparison works, including travel advice, typical weather, and the API contract: [docs/trip-comparison.md](docs/trip-comparison.md).

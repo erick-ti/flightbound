@@ -16,6 +16,10 @@ const nextConfig: NextConfig = {
         source: "/api/travel-advice/countries",
         destination: `${apiOrigin}/api/travel-advice/countries`,
       },
+      {
+        source: "/api/places",
+        destination: `${apiOrigin}/api/places`,
+      },
     ];
   },
 };
