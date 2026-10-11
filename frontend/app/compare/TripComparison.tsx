@@ -1,12 +1,16 @@
 "use client";
 
-import { useState, type ReactNode, type SubmitEvent } from "react";
+import { useEffect, useState, type ReactNode, type SubmitEvent } from "react";
 import {
   requestComparison,
+  requestCountries,
+  type Alert,
   type Comparison,
   type ComparisonRequest,
+  type Country,
   type DestinationEstimate,
   type ExchangeRates,
+  type TravelAdvice,
 } from "./api";
 import styles from "./TripComparison.module.css";
 
@@ -22,9 +26,12 @@ const MIN_DESTINATIONS = 2;
 const MAX_DESTINATIONS = 3;
 const ECB_RATES_URL =
   "https://www.ecb.europa.eu/stats/policy_and_exchange_rates/euro_reference_exchange_rates/html/index.en.html";
+const OGL_URL = "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/";
 
 type DestinationDraft = {
   label: string;
+  // An FCDO country slug for travel advice; "" means none.
+  country: string;
   flight: string;
   // An amount's currency is null while it follows the comparison currency.
   // Typing the amount or choosing its currency sets it for good.
@@ -52,6 +59,7 @@ type Outcome =
 
 const blankDestination: DestinationDraft = {
   label: "",
+  country: "",
   flight: "",
   flightCurrency: null,
   nightly: "",
@@ -72,9 +80,32 @@ export default function TripComparison() {
   const [draft, setDraft] = useState(initialDraft);
   const [pending, setPending] = useState(false);
   const [outcome, setOutcome] = useState<Outcome>({ kind: "none" });
+  const [countries, setCountries] = useState<Country[] | "loading" | "failed">("loading");
+
+  useEffect(() => {
+    let active = true;
+    const controller = new AbortController();
+    // Give up on a slow list after 10 seconds, like a comparison request.
+    const timer = setTimeout(() => controller.abort(), 10_000);
+    requestCountries(controller.signal).then((list) => {
+      clearTimeout(timer);
+      if (active) {
+        setCountries(list ?? "failed");
+      }
+    });
+    return () => {
+      active = false;
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, []);
 
   const errors: Record<string, string> = outcome.kind === "invalid" ? outcome.fieldErrors : {};
   const stale = outcome.kind === "result" && !sameDraft(outcome.submitted, draft);
+  const countryHint =
+    countries === "failed"
+      ? "The country list could not be loaded, so travel advice is off. Reload the page to try again."
+      : "Optional. Shows the UK government's FCDO travel advice for this country.";
 
   function update(patch: Partial<Draft>) {
     setDraft((current) => ({ ...current, ...patch }));
@@ -194,6 +225,7 @@ export default function TripComparison() {
           {draft.destinations.map((destination, i) => {
             const prefix = `destinations[${i}].`;
             const labelPath = `${prefix}label`;
+            const countryPath = `${prefix}country`;
             return (
               <fieldset key={i} className={styles.group}>
                 <legend>Destination {i + 1}</legend>
@@ -209,6 +241,25 @@ export default function TripComparison() {
                         updateDestination(i, () => ({ label }));
                       }}
                     />
+                  </Field>
+                  <Field path={countryPath} label="Country for travel advice" hint={countryHint} error={errors[countryPath]}>
+                    <select
+                      {...controlProps(countryPath, errors[countryPath], true)}
+                      value={destination.country}
+                      disabled={countries === "loading"}
+                      onChange={(e) => {
+                        const country = e.target.value;
+                        updateDestination(i, () => ({ country }));
+                      }}
+                    >
+                      <option value="">None</option>
+                      {Array.isArray(countries) &&
+                        countries.map((c) => (
+                          <option key={c.slug} value={c.slug}>
+                            {c.name}
+                          </option>
+                        ))}
+                    </select>
                   </Field>
                   <AmountField
                     path={`${prefix}flight_estimate`}
@@ -368,6 +419,13 @@ function Results({ comparison, stale }: { comparison: Comparison; stale: boolean
         <p className={styles.note}>No lowest estimate is marked until every destination has a total.</p>
       )}
       {rates && <RatesNote rates={rates} />}
+      {comparison.destinations.some((d) => d.travel_advice !== null) && (
+        <p className={styles.note}>
+          Travel advice comes from the UK Foreign, Commonwealth &amp; Development Office (FCDO) on GOV.UK and is
+          written for British travellers. Contains public sector information licensed under the{" "}
+          <a href={OGL_URL}>Open Government Licence v3.0</a>.
+        </p>
+      )}
       <p className={styles.note}>
         These are your own estimates, not live prices or supplier offers. They cover flights and
         accommodation only, not a full trip budget.
@@ -490,8 +548,69 @@ function DestinationCard({
       </dl>
       <BudgetLine destination={d} currency={currency} budgetConverted={budgetConverted} />
       {!d.complete && incomplete && <p className={styles.missing}>{incomplete}</p>}
+      {d.travel_advice && <AdviceNote advice={d.travel_advice} />}
     </article>
   );
+}
+
+// AdviceNote shows FCDO's travel advice for a destination's country, with one
+// sentence for each alert the API returned.
+function AdviceNote({ advice: a }: { advice: TravelAdvice }) {
+  if (!a.available) {
+    return (
+      <div className={styles.advice}>
+        <p>
+          Travel advice unavailable. <a href={a.url}>Check the latest advice on GOV.UK</a>.
+        </p>
+      </div>
+    );
+  }
+  const parts = a.alerts.some(
+    (alert) => alert === "avoid_all_travel_to_parts" || alert === "avoid_all_but_essential_travel_to_parts",
+  );
+  return (
+    <div className={styles.advice}>
+      {a.alerts.length === 0 ? (
+        <p>FCDO does not advise against travel to any part of {a.country_name}.</p>
+      ) : (
+        a.alerts.map((alert) => (
+          <p key={alert} className={styles.warning}>
+            {alertText(alert, a.country_name)}
+          </p>
+        ))
+      )}
+      {parts && <p>Check whether the places you plan to visit are in an affected area.</p>}
+      <p className={styles.adviceDates}>
+        Updated {formatUpdated(a.updated_at)}.{a.checked_at !== null && ` Checked ${formatChecked(a.checked_at)}.`}
+      </p>
+      <p>
+        <a href={a.url}>Read the full advice on GOV.UK</a>
+      </p>
+    </div>
+  );
+}
+
+function alertText(alert: Alert, country: string): string {
+  switch (alert) {
+    case "avoid_all_travel_to_whole_country":
+      return `FCDO advises against all travel to ${country}.`;
+    case "avoid_all_travel_to_parts":
+      return `FCDO advises against all travel to parts of ${country}.`;
+    case "avoid_all_but_essential_travel_to_whole_country":
+      return `FCDO advises against all but essential travel to ${country}.`;
+    case "avoid_all_but_essential_travel_to_parts":
+      return `FCDO advises against all but essential travel to parts of ${country}.`;
+  }
+}
+
+// GOV.UK dates its advice in UK time, so the update date uses UK time too.
+function formatUpdated(time: string) {
+  return new Intl.DateTimeFormat("en-GB", { dateStyle: "long", timeZone: "Europe/London" }).format(new Date(time));
+}
+
+// The check time is shown in the viewer's own time zone.
+function formatChecked(time: string) {
+  return new Intl.DateTimeFormat("en-GB", { dateStyle: "long", timeStyle: "short" }).format(new Date(time));
 }
 
 // BudgetLine says how a destination compares with the budget, with the
@@ -605,6 +724,7 @@ function toRequest(draft: Draft): ComparisonRequest {
     budget_currency: draft.budgetCurrency ?? draft.currency,
     destinations: draft.destinations.map((d) => ({
       label: d.label,
+      country: d.country === "" ? null : d.country,
       flight_estimate: optionalAmount(d.flight),
       flight_estimate_currency: d.flightCurrency ?? draft.currency,
       nightly_stay_estimate: optionalAmount(d.nightly),

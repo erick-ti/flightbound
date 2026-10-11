@@ -67,7 +67,8 @@ API_ORIGIN="$api_origin" npm run build
 
 echo "smoke: starting servers on ports $api_port and $web_port"
 "$tmp/server" -addr "127.0.0.1:${api_port}" \
-  -fx-rates-file "$root/backend/internal/fxrates/testdata/eurofxref-daily.xml" >"$tmp/api.log" 2>&1 &
+  -fx-rates-file "$root/backend/internal/fxrates/testdata/eurofxref-daily.xml" \
+  -travel-advice-dir "$root/backend/internal/traveladvice/testdata" >"$tmp/api.log" 2>&1 &
 api_pid=$!
 ./node_modules/.bin/next start --hostname 127.0.0.1 --port "$web_port" >"$tmp/web.log" 2>&1 &
 web_pid=$!

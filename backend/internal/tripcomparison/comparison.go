@@ -1,6 +1,7 @@
 // Package tripcomparison compares flight-plus-stay estimates for two or
-// three destinations that share dates and a party size, and checks each
-// against an optional trip budget.
+// three destinations that share dates and a party size, checks each against
+// an optional trip budget, and adds FCDO travel advice for any destination
+// with a country.
 //
 // Every amount is a traveler-entered figure for the whole party, in a
 // supported currency of its own. This package validates the amounts,
@@ -9,6 +10,7 @@
 package tripcomparison
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -17,6 +19,7 @@ import (
 
 	"github.com/erick-ti/flightbound/backend/internal/fxrates"
 	"github.com/erick-ti/flightbound/backend/internal/money"
+	"github.com/erick-ti/flightbound/backend/internal/traveladvice"
 )
 
 // Limits on a comparison request.
@@ -50,6 +53,9 @@ type Request struct {
 // currency means the comparison currency.
 type DestinationInput struct {
 	Label string `json:"label"`
+	// Country is the FCDO country slug for travel advice, such as
+	// "portugal"; nil means none.
+	Country *string `json:"country"`
 	// FlightEstimate is the round-trip flight cost for the whole party.
 	FlightEstimate         *string `json:"flight_estimate"`
 	FlightEstimateCurrency *string `json:"flight_estimate_currency"`
@@ -98,6 +104,7 @@ type ExchangeRates struct {
 // DestinationEstimate is one destination's calculated estimate.
 type DestinationEstimate struct {
 	Label                       string  `json:"label"`
+	Country                     *string `json:"country"`
 	FlightEstimate              *string `json:"flight_estimate"`
 	FlightEstimateCurrency      string  `json:"flight_estimate_currency"`
 	NightlyStayEstimate         *string `json:"nightly_stay_estimate"`
@@ -123,6 +130,10 @@ type DestinationEstimate struct {
 	// destination goes over by (BudgetOverAtLeast); it is nil otherwise.
 	BudgetStatus     BudgetStatus `json:"budget_status"`
 	BudgetDifference *string      `json:"budget_difference"`
+	// TravelAdvice is FCDO's advice for Country, or nil when the destination
+	// has no country. It never changes an amount, a budget status, or the
+	// lowest label.
+	TravelAdvice *TravelAdvice `json:"travel_advice"`
 }
 
 // BudgetStatus is the result of checking a destination against the budget.
@@ -157,7 +168,12 @@ type FieldError struct {
 // field error it finds, or the comparison when there are none. It asks
 // rates for exchange rates at most once, and only when a known estimate or
 // the budget is in a currency other than the comparison currency.
-func Compare(req Request, rates fxrates.Source) (Comparison, []FieldError) {
+//
+// For a valid request, it asks advice once for each distinct country, all
+// at the same time and alongside the calculation, and waits at most
+// adviceTimeout for them. A nil advice source leaves every country's advice
+// unavailable.
+func Compare(ctx context.Context, req Request, rates fxrates.Source, advice traveladvice.Source) (Comparison, []FieldError) {
 	var v validator
 	nights := v.nights(req.CheckIn, req.CheckOut)
 	if req.Travelers < MinTravelers || req.Travelers > MaxTravelers {
@@ -181,7 +197,17 @@ func Compare(req Request, rates fxrates.Source) (Comparison, []FieldError) {
 	if len(v.errs) > 0 {
 		return Comparison{}, v.errs
 	}
-	return calculate(req, cur, nights, b, parsed, rates)
+	ctx, cancel := context.WithTimeout(ctx, adviceTimeout)
+	defer cancel()
+	lookup := lookUpAdvice(ctx, advice, parsed)
+	result, errs := calculate(req, cur, nights, b, parsed, rates)
+	if len(errs) > 0 {
+		cancel()
+		lookup.wait()
+		return Comparison{}, errs
+	}
+	lookup.attach(result.Destinations, parsed)
+	return result, nil
 }
 
 // budget is a validated budget in minor units of its own currency. A nil
@@ -195,6 +221,7 @@ type budget struct {
 // their own currencies.
 type destination struct {
 	label      string
+	country    *traveladvice.Country
 	flight     *int64
 	flightCur  money.Currency
 	nightly    *int64
@@ -255,6 +282,13 @@ func (v *validator) destination(i int, d DestinationInput, cur money.Currency, c
 		v.add(prefix+"label", fmt.Sprintf("Use at most %d characters.", MaxLabelLength))
 	}
 	parsed := destination{label: label}
+	if d.Country != nil {
+		if c, ok := traveladvice.Lookup(*d.Country); ok {
+			parsed.country = &c
+		} else {
+			v.add(prefix+"country", "Choose a country from the list.")
+		}
+	}
 	parsed.flightCur, parsed.flight = v.estimate(prefix+"flight_estimate", d.FlightEstimate, d.FlightEstimateCurrency, cur, curOK)
 	parsed.nightlyCur, parsed.nightly = v.estimate(prefix+"nightly_stay_estimate", d.NightlyStayEstimate, d.NightlyStayEstimateCurrency, cur, curOK)
 	return parsed

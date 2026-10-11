@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/erick-ti/flightbound/backend/internal/traveladvice"
 )
 
 const sampleBody = `{
@@ -22,10 +24,15 @@ const sampleBody = `{
 
 func post(t *testing.T, body string) *httptest.ResponseRecorder {
 	t.Helper()
+	return postWith(t, body, savedAdvice(t))
+}
+
+func postWith(t *testing.T, body string, advice traveladvice.Source) *httptest.ResponseRecorder {
+	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "/api/trip-comparisons", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
-	Handler(fixtureRates(t)).ServeHTTP(rec, req)
+	Handler(fixtureRates(t), advice).ServeHTTP(rec, req)
 	return rec
 }
 

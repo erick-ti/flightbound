@@ -102,8 +102,11 @@
   gap: 0.5rem;
 }
 
+/* A zero base width keeps the input's default width from pushing the row
+   past its grid column; flex: 1 then gives it the space the menu leaves. */
 .amount input {
   flex: 1;
+  width: 0;
 }
 
 .amount select {
@@ -278,5 +281,32 @@
 .note {
   margin: 1rem 0 0;
   font-size: 0.9rem;
+  color: #52606d;
+}
+
+/* Travel advice sits apart from the estimates; it never changes a total. */
+.advice {
+  margin: 0.75rem 0 0;
+  padding-top: 0.75rem;
+  font-size: 0.95rem;
+  border-top: 1px solid #d9e2ec;
+}
+
+.advice p {
+  margin: 0.25rem 0 0;
+}
+
+.advice p:first-child {
+  margin-top: 0;
+}
+
+/* The wording carries the warning; the color only reinforces it. */
+.warning {
+  font-weight: 600;
+  color: #9a3412;
+}
+
+.adviceDates {
+  font-size: 0.85rem;
   color: #52606d;
 }

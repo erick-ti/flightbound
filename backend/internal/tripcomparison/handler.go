@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"github.com/erick-ti/flightbound/backend/internal/fxrates"
+	"github.com/erick-ti/flightbound/backend/internal/traveladvice"
 )
 
 // maxBodyBytes bounds the request body. A valid request with three
@@ -25,16 +26,16 @@ type errorResponse struct {
 }
 
 // Handler serves trip comparison requests, converting amounts with rates
-// from the given source. Register it on its path without a method pattern:
-// it answers every method itself so that all of its responses, including
-// 405, are JSON.
-func Handler(rates fxrates.Source) http.Handler {
+// from the given source and adding travel advice from advice. Register it
+// on its path without a method pattern: it answers every method itself so
+// that all of its responses, including 405, are JSON.
+func Handler(rates fxrates.Source, advice traveladvice.Source) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		serve(w, r, rates)
+		serve(w, r, rates, advice)
 	})
 }
 
-func serve(w http.ResponseWriter, r *http.Request, rates fxrates.Source) {
+func serve(w http.ResponseWriter, r *http.Request, rates fxrates.Source, advice traveladvice.Source) {
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		writeJSON(w, http.StatusMethodNotAllowed, errorResponse{Message: "Use POST to request a trip comparison."})
@@ -50,7 +51,7 @@ func serve(w http.ResponseWriter, r *http.Request, rates fxrates.Source) {
 		writeJSON(w, http.StatusBadRequest, errorResponse{Message: "The request body must be a single JSON trip comparison object."})
 		return
 	}
-	comparison, fieldErrors := Compare(req, rates)
+	comparison, fieldErrors := Compare(r.Context(), req, rates, advice)
 	if len(fieldErrors) > 0 {
 		writeJSON(w, http.StatusUnprocessableEntity, errorResponse{Message: "Some entries need attention.", FieldErrors: fieldErrors})
 		return
