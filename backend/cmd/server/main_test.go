@@ -14,6 +14,7 @@ import (
 
 	"github.com/erick-ti/flightbound/backend/internal/fxrates"
 	"github.com/erick-ti/flightbound/backend/internal/offlinetest"
+	"github.com/erick-ti/flightbound/backend/internal/places"
 	"github.com/erick-ti/flightbound/backend/internal/traveladvice"
 )
 
@@ -230,26 +231,55 @@ func TestRoutes(t *testing.T) {
 				t.Errorf("%d countries, want the %d saved ones", len(body.Countries), len(traveladvice.Countries()))
 			}
 		})
-	}
-
-	for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodOptions} {
-		t.Run(method+" on the countries gets a JSON 405", func(t *testing.T) {
+		t.Run(method+" lists the supported places", func(t *testing.T) {
 			rec := httptest.NewRecorder()
-			mux.ServeHTTP(rec, httptest.NewRequest(method, "/api/travel-advice/countries", nil))
-			if rec.Code != http.StatusMethodNotAllowed {
-				t.Fatalf("status = %d", rec.Code)
-			}
-			if got := rec.Header().Get("Allow"); got != "GET, HEAD" {
-				t.Errorf("Allow = %q, want GET, HEAD", got)
+			mux.ServeHTTP(rec, httptest.NewRequest(method, "/api/places", nil))
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, body %s", rec.Code, rec.Body)
 			}
 			checkJSON(t, rec)
 			var body struct {
-				Message string `json:"message"`
+				Places []struct {
+					ID string `json:"id"`
+				} `json:"places"`
 			}
-			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.Message == "" {
-				t.Errorf("body = %q, want a JSON message", rec.Body)
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("body is not JSON: %v", err)
+			}
+			var ids []string
+			for _, p := range body.Places {
+				ids = append(ids, p.ID)
+			}
+			var want []string
+			for _, p := range places.All() {
+				want = append(want, p.ID)
+			}
+			if !slices.Equal(ids, want) {
+				t.Errorf("places %v, want the saved ones %v", ids, want)
 			}
 		})
+	}
+
+	for _, path := range []string{"/api/travel-advice/countries", "/api/places"} {
+		for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodDelete, http.MethodOptions} {
+			t.Run(method+" on "+path+" gets a JSON 405", func(t *testing.T) {
+				rec := httptest.NewRecorder()
+				mux.ServeHTTP(rec, httptest.NewRequest(method, path, nil))
+				if rec.Code != http.StatusMethodNotAllowed {
+					t.Fatalf("status = %d", rec.Code)
+				}
+				if got := rec.Header().Get("Allow"); got != "GET, HEAD" {
+					t.Errorf("Allow = %q, want GET, HEAD", got)
+				}
+				checkJSON(t, rec)
+				var body struct {
+					Message string `json:"message"`
+				}
+				if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil || body.Message == "" {
+					t.Errorf("body = %q, want a JSON message", rec.Body)
+				}
+			})
+		}
 	}
 
 	t.Run("a comparison gets advice for its countries", func(t *testing.T) {
