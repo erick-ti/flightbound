@@ -29,7 +29,7 @@ The web app forwards `/api/trip-comparisons`, `/api/travel-advice/countries`, an
 
 Typical weather for the supported places and the map's land, lakes, and borders (from Natural Earth) are saved in the repository, so neither app needs an outside service for them. Rebuilding the weather figures from Copernicus data is described in [docs/trip-comparison.md](docs/trip-comparison.md#places-and-typical-weather); it needs [uv](https://docs.astral.sh/uv/) and a free Climate Data Store account.
 
-Run every check: Go formatting, vet, and tests with the race detector, both builds, then HTTP checks and browser tests of the map against both apps running on ports 18080 and 13000 (override with `SMOKE_API_PORT` and `SMOKE_WEB_PORT`).
+Run every check: Go formatting, vet, and tests with the race detector, both builds, then HTTP checks and browser tests of the map and trip links against both apps running on ports 18080 and 13000 (override with `SMOKE_API_PORT` and `SMOKE_WEB_PORT`).
 
 ```sh
 make smoke
