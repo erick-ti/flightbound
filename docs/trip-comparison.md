@@ -1,6 +1,6 @@
 # Trip comparison
 
-The `/compare` page compares two or three destinations for one trip. A traveler enters their own estimates, each in the currency they have it in, and can add a budget for the trip and, for each destination, a place from a short list or a country. The Go API at `POST /api/trip-comparisons` validates the amounts, converts them to one comparison currency, does all of the arithmetic, checks each destination against the budget, adds the UK government's travel advice for each country, and adds the typical weather of each place for the months of the stay. The page shows the results exactly as the API returns them.
+The `/compare` page compares two or three destinations for one trip. A traveler enters their own estimates, each in the currency they have it in, and can add a budget for the trip and, for each destination, a place from a short list or a country. The Go API at `POST /api/trip-comparisons` validates the amounts, converts them to one comparison currency, does all of the arithmetic, checks each destination against the budget, adds the UK government's travel advice for each country, and adds the typical weather of each place for the months of the stay. The page shows the results exactly as the API returns them, with the places on a map.
 
 Results are the traveler's own estimates. They are not live prices, supplier offers, or a complete trip budget: they cover flights and accommodation only.
 
@@ -16,7 +16,7 @@ Shared by every destination:
 For each destination:
 
 - A name, 1 to 80 characters after surrounding spaces are trimmed.
-- An optional place, chosen from the supported places, as described under [Places and typical weather](#places-and-typical-weather). A place sets the destination's country.
+- An optional place, chosen from the supported places, as described under [Places and typical weather](#places-and-typical-weather). A place sets the destination's country and puts it on the [map](#map).
 - An optional country, chosen from the countries and territories with travel advice, as described under [Travel advice](#travel-advice). With a place, the country is the place's.
 - A round-trip flight estimate for the whole party.
 - An accommodation estimate per night for the whole party.
@@ -116,6 +116,25 @@ For each month the page shows one sentence, such as "Typical weather in Lisbon i
 - **Requests.** The figures are saved in `backend/internal/climate/normals.json`, so a comparison never contacts the Climate Data Store.
 - **Regenerating the figures.** `scripts/climate/download_era5.py` downloads each place's hourly data once, for its climate point. It needs a Climate Data Store account that has accepted the dataset's licence, with the account's token in `~/.cdsapirc`; `--check-token` checks the token and licence without downloading. Each download is one request, logged in `requests.log` in the output directory before it is sent, and `--max-requests` caps the total in that log across runs. The client never retries, so the first failure stops the run, and a rerun skips places already downloaded. Each download is saved as the service sends it: `<place ID>.zip`, a zip archive holding a 2 m temperature file and a precipitation file. Then `cd backend && go run ./cmd/climatenormals -in <dir> -out <candidate>` checks each download (two CSV files of consecutive hours at the place's climate point, with plausible values and none missing), computes the normals, and writes them in one step, recording each download's SHA-256. Check the candidate before writing over `internal/climate/normals.json`, the default output. The same downloads always give the same file. The attribution's year, in `cmd/climatenormals` and in the page footer, is the year of the downloads, so update both when downloading again, together with the Lisbon figures in this document's examples. Test the script with `uv run --locked scripts/climate/test_download_era5.py`; its tests use a local server, never the Climate Data Store.
 
+## Map
+
+When at least one destination has a place, the results start with a world map above the cards. Each place gets one pin: a button holding the numbers of the destinations at that place (two destinations at the same place share a pin, such as "1,2"), drawn at the `location` the API returns. While the map is shown, each card's heading starts with its number, a card with a place has a "Show on map" button, and a card without one says "Not on the map: no place chosen."
+
+- **Selecting.** The pins and the cards' buttons share one selection. Selecting a pin highlights its cards and brings the first of them into view. Selecting a card's button highlights its pin and moves the map to the pin if it is out of view. Selecting the same place again clears the selection, and each new comparison starts with nothing selected. A selected pin grows and gains a dark ring, and a selected card gains a dark ring, so the change does not rely on color alone.
+- **What it shows.** The map draws the comparison as submitted: editing the form moves no pin until the next comparison, and an out-of-date result dims the map with the cards. The first view fits every pin, closer in for a single place, and the pins are fitted again whenever the map changes size. The map does not rotate or tilt. Zooming with a mouse wheel needs Ctrl (⌘ on a Mac) and panning on a touch screen needs two fingers, so the page itself still scrolls.
+- **Map data.** Natural Earth's 1:110m land, lakes, and land borders, from release v5.1.2 of [natural-earth-vector](https://github.com/nvkelso/natural-earth-vector) (public domain), served by the web app from `frontend/public/map/` exactly as published:
+
+  | File | Bytes | SHA-256 |
+  | --- | --- | --- |
+  | `ne_110m_land.geojson` | 138,160 | `9e0729ee253ca7d7a5c4ae9395fb1902264c5377c52e224d13dd85010e2835d9` |
+  | `ne_110m_lakes.geojson` | 36,648 | `eb02ecc86c82004fccbf979058bfabbbd6c2d07968c7844d38eb1c9152d2ffc9` |
+  | `ne_110m_admin_0_boundary_lines_land.geojson` | 340,010 | `d42479fd79552cca4eec7f85fcdca717a790d29ff06be7676f1af0568c6d3f7c` |
+
+  Lakes are drawn as water over the land. Borders follow Natural Earth's default, which draws a border where control is on the ground ([disputed boundaries policy](https://www.naturalearthdata.com/about/disputed-boundaries-policy/)): a border whose `FEATURECLA` is "International boundary (verify)" is solid, and every other kind (disputed, line of control, indefinite, claim, indeterminate frontier) is dashed. The map has no place names, so it needs no fonts or icons. Its credit reads "MapLibre | Natural Earth".
+- **Drawing.** [MapLibre GL JS](https://maplibre.org/) 6.13.0 draws the map with WebGL2. The page loads it only when a result has a place, and its worker file comes from the web app's own build, so the map makes no request outside the web app.
+- **When the map cannot be shown.** If MapLibre fails to load, the browser has no WebGL2, a map file fails to load, or the map has not loaded within 10 seconds, the map gives way to "The map could not be shown in this browser. Every destination is listed below." The cards never depend on the map: they keep every estimate and drop their numbers and map buttons.
+- **Checks.** `make smoke` checks that each map file is served with its SHA-256, then runs the browser tests in `frontend/tests/` (Playwright with headless Chromium) against the running apps: selecting from a pin and from a card, a shared pin, the reset on a new comparison, the refit after a resize, each failure above, and that no request leaves the web origin. The tests block such requests rather than only record them, refuse every redirect so none can be followed to another origin, and prove both with requests that would otherwise reach a second local origin.
+
 ## Money
 
 Amounts are exact. The API reads each amount as a decimal string and keeps it as an integer count of the currency's minor unit (cents, or whole yen). The only rounding is the conversion rule above.
@@ -201,7 +220,8 @@ A `200` response repeats the inputs in canonical form, with every estimate's cur
         "months": [
           { "month": 3, "high_c": 17, "high_f": 63, "low_c": 11, "low_f": 51, "precipitation_mm": 55, "precipitation_in": "2.2" }
         ]
-      }
+      },
+      "location": { "latitude": 38.7247, "longitude": -9.1468 }
     },
     {
       "label": "Porto",
@@ -220,7 +240,8 @@ A `200` response repeats the inputs in canonical form, with every estimate's cur
       "budget_status": "unknown",
       "budget_difference": null,
       "travel_advice": null,
-      "climate": null
+      "climate": null,
+      "location": null
     }
   ]
 }
@@ -233,6 +254,7 @@ A `200` response repeats the inputs in canonical form, with every estimate's cur
 - `exchange_rates` is `null` when nothing needed converting. Otherwise `available` says whether usable rates were loaded, `date` is their reference date (`null` when unavailable), and `per_euro` lists each currency other than the euro that a conversion used, with its rate exactly as the ECB published it.
 - `place` is the place's ID, or `null`. With a place, `country` is the place's country.
 - `climate` is `null` when the destination has no place. Otherwise it has `place_name`, the years `period_start` and `period_end` that the figures average, and `months`: one entry for each calendar month that the stay's nights fall in, in the order the stay reaches them, with `month` (1 for January to 12 for December), the integers `high_c`, `high_f`, `low_c`, `low_f`, and `precipitation_mm`, and `precipitation_in` as a decimal string with one decimal place. See [Places and typical weather](#places-and-typical-weather).
+- `location` is `null` when the destination has no place. Otherwise it gives the place's `latitude` and `longitude` in degrees, as listed in `places.json`: the city's point from Natural Earth, not its climate point. The page uses it to put the destination on the [map](#map). It never changes an amount, a budget check, completeness, or the lowest label.
 - `travel_advice` is `null` when the destination has no country. Otherwise `country_name` and `url` name the country and its advice page on GOV.UK, and `available` says whether current advice was received. When it was, `alerts` lists the warnings most severe first (empty when there are none), and `updated_at` and `checked_at` are RFC 3339 times in UTC, with `checked_at` `null` for a saved copy. When it was not, `alerts`, `updated_at`, and `checked_at` are `null`. See [Travel advice](#travel-advice).
 
 Errors are JSON objects with a `message`:
