@@ -3,6 +3,7 @@
 // saved in the repository, so nothing here reaches an outside service.
 // Usage: node scripts/smoke-checks.mjs http://127.0.0.1:13000
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 
 const origin = process.argv[2];
 if (!origin) {
@@ -149,10 +150,10 @@ const checks = [
     },
   ],
   [
-    "the compare page offers a place for typical weather",
+    "the compare page offers a place for the map and typical weather",
     async () => {
       const html = await (await fetch(`${origin}/compare`)).text();
-      assert.match(html, /Place for typical weather/);
+      assert.match(html, /Puts the destination on the map, shows typical weather for your dates/);
       assert.match(html, /Not listed/);
     },
   ],
@@ -174,7 +175,7 @@ const checks = [
     },
   ],
   [
-    "a place sets the country and adds typical weather without changing totals",
+    "a place sets the country and adds typical weather and a location without changing totals",
     async () => {
       const plain = await compare(trip);
       const placed = await compare({
@@ -197,7 +198,10 @@ const checks = [
       assert.ok(march.high_c >= march.low_c && march.high_f >= march.low_f, JSON.stringify(march));
       assert.match(march.precipitation_in, /^\d+\.\d$/);
       assert.equal(porto.climate, null);
-      const strip = ({ place, country, travel_advice, climate, ...rest }) => rest;
+      // The city's point, not its climate point (38.7, -9.2).
+      assert.deepEqual(lisbon.location, { latitude: 38.7247, longitude: -9.1468 });
+      assert.equal(porto.location, null);
+      const strip = ({ place, country, travel_advice, climate, location, ...rest }) => rest;
       assert.deepEqual(placed.body.destinations.map(strip), plain.body.destinations.map(strip));
     },
   ],
@@ -226,10 +230,28 @@ const checks = [
     },
   ],
   [
-    "destinations without a place get no typical weather",
+    "destinations without a place get no typical weather or location",
     async () => {
       const { body } = await compare(trip);
-      assert.ok(body.destinations.every((d) => d.place === null && d.climate === null));
+      assert.ok(body.destinations.every((d) => d.place === null && d.climate === null && d.location === null));
+    },
+  ],
+  [
+    "the map files come from the web server unchanged",
+    async () => {
+      // Natural Earth v5.1.2, byte for byte (see docs/trip-comparison.md).
+      const files = {
+        "ne_110m_land.geojson": "9e0729ee253ca7d7a5c4ae9395fb1902264c5377c52e224d13dd85010e2835d9",
+        "ne_110m_lakes.geojson": "eb02ecc86c82004fccbf979058bfabbbd6c2d07968c7844d38eb1c9152d2ffc9",
+        "ne_110m_admin_0_boundary_lines_land.geojson": "d42479fd79552cca4eec7f85fcdca717a790d29ff06be7676f1af0568c6d3f7c",
+      };
+      for (const [name, sha256] of Object.entries(files)) {
+        const response = await fetch(`${origin}/map/${name}`);
+        assert.equal(response.status, 200, name);
+        assert.match(response.headers.get("content-type"), /^application\/geo\+json/, name);
+        const body = Buffer.from(await response.arrayBuffer());
+        assert.equal(createHash("sha256").update(body).digest("hex"), sha256, name);
+      }
     },
   ],
   [

@@ -42,6 +42,30 @@ func TestPlaceSetsTheCountry(t *testing.T) {
 	}
 }
 
+func TestPlaceSetsTheLocation(t *testing.T) {
+	got, errs := Compare(t.Context(), withPlaces("lisbon", "rome"), unusedRates{t}, newFakeAdvice())
+	if errs != nil {
+		t.Fatalf("errors: %+v", errs)
+	}
+	// The cities' points from places.json, not their climate points (38.7,
+	// -9.2 and 41.9, 12.5).
+	want := []Location{{Latitude: 38.7247, Longitude: -9.1468}, {Latitude: 41.8979, Longitude: 12.4813}}
+	for i, d := range got.Destinations {
+		if d.Location == nil || *d.Location != want[i] {
+			t.Errorf("destination %d location = %+v, want %+v", i, d.Location, want[i])
+		}
+	}
+	without, errs := Compare(t.Context(), sampleRequest(), unusedRates{t}, newFakeAdvice())
+	if errs != nil {
+		t.Fatalf("errors: %+v", errs)
+	}
+	for i, d := range without.Destinations {
+		if d.Location != nil {
+			t.Errorf("destination %d without a place: location = %+v, want nil", i, d.Location)
+		}
+	}
+}
+
 func TestPlaceWithItsOwnCountry(t *testing.T) {
 	req := withPlaces("lisbon")
 	req.Destinations[0].Country = strp("portugal")
@@ -121,9 +145,9 @@ func TestPlaceChangesNothingElse(t *testing.T) {
 	}
 	for i := range with.Destinations {
 		d := with.Destinations[i]
-		d.Place, d.Country, d.TravelAdvice, d.Climate = nil, nil, nil, nil
+		d.Place, d.Country, d.TravelAdvice, d.Climate, d.Location = nil, nil, nil, nil, nil
 		if !reflect.DeepEqual(d, without.Destinations[i]) {
-			t.Errorf("destination %d with a place = %+v, want %+v apart from place, country, advice and climate", i, d, without.Destinations[i])
+			t.Errorf("destination %d with a place = %+v, want %+v apart from place, country, advice, climate and location", i, d, without.Destinations[i])
 		}
 	}
 	with.Destinations, without.Destinations = nil, nil
@@ -163,10 +187,14 @@ func TestPlaceWireFormat(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatal(err)
 	}
-	for i, want := range []struct{ place, country string }{{`"lisbon"`, `"portugal"`}, {`null`, `null`}} {
+	for i, want := range []struct{ place, country, location string }{
+		{`"lisbon"`, `"portugal"`, `{"latitude":38.7247,"longitude":-9.1468}`},
+		{`null`, `null`, `null`},
+	} {
 		d := got.Destinations[i]
-		if string(d["place"]) != want.place || string(d["country"]) != want.country {
-			t.Errorf("destination %d: place %s, country %s; want %s, %s", i, d["place"], d["country"], want.place, want.country)
+		if string(d["place"]) != want.place || string(d["country"]) != want.country || string(d["location"]) != want.location {
+			t.Errorf("destination %d: place %s, country %s, location %s; want %s, %s, %s",
+				i, d["place"], d["country"], d["location"], want.place, want.country, want.location)
 		}
 	}
 }

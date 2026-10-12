@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, type ReactNode, type SubmitEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode, type SubmitEvent } from "react";
 import {
   requestComparison,
   requestCountries,
@@ -15,6 +15,7 @@ import {
   type ExchangeRates,
   type TravelAdvice,
 } from "./api";
+import ResultsMap, { type Pin } from "./ResultsMap";
 import styles from "./TripComparison.module.css";
 
 // Currency codes the API accepts. The API validates the choice and owns each
@@ -66,7 +67,9 @@ type Draft = {
 
 type Outcome =
   | { kind: "none" }
-  | { kind: "result"; comparison: Comparison; submitted: Draft }
+  // id is new for every comparison, so the results start over, with nothing
+  // selected on the map.
+  | { kind: "result"; comparison: Comparison; submitted: Draft; id: number }
   | { kind: "invalid"; message: string; fieldErrors: Record<string, string> }
   | { kind: "failed"; message: string };
 
@@ -94,6 +97,7 @@ export default function TripComparison() {
   const [draft, setDraft] = useState(initialDraft);
   const [pending, setPending] = useState(false);
   const [outcome, setOutcome] = useState<Outcome>({ kind: "none" });
+  const comparisons = useRef(0);
   // The two lists load separately, so either can fail on its own.
   const countries = useList(requestCountries);
   const places = useList(requestPlaces);
@@ -102,8 +106,8 @@ export default function TripComparison() {
   const stale = outcome.kind === "result" && !sameDraft(outcome.submitted, draft);
   const placeHint =
     places === "failed"
-      ? "The place list could not be loaded, so typical weather is off. Reload the page to try again."
-      : "Optional. Shows typical weather for your dates and sets the country for travel advice.";
+      ? "The place list could not be loaded, so the map and typical weather are off. Reload the page to try again."
+      : "Optional. Puts the destination on the map, shows typical weather for your dates, and sets the country for travel advice.";
 
   function countryHint(destination: DestinationDraft) {
     if (destination.place !== "") {
@@ -162,7 +166,8 @@ export default function TripComparison() {
     const result = await requestComparison(toRequest(submitted));
     setPending(false);
     if (result.kind === "ok") {
-      setOutcome({ kind: "result", comparison: result.comparison, submitted });
+      comparisons.current += 1;
+      setOutcome({ kind: "result", comparison: result.comparison, submitted, id: comparisons.current });
     } else if (result.kind === "invalid") {
       const fieldErrors = Object.fromEntries(result.fieldErrors.map((e) => [e.field, e.message]));
       setOutcome({ kind: "invalid", message: result.message, fieldErrors });
@@ -267,7 +272,7 @@ export default function TripComparison() {
                       }}
                     />
                   </Field>
-                  <Field path={placePath} label="Place for typical weather" hint={placeHint} error={errors[placePath]}>
+                  <Field path={placePath} label="Place" hint={placeHint} error={errors[placePath]}>
                     <select
                       {...controlProps(placePath, errors[placePath], true)}
                       value={destination.place}
@@ -374,7 +379,7 @@ export default function TripComparison() {
           {outcome.message}
         </p>
       )}
-      {outcome.kind === "result" && <Results comparison={outcome.comparison} stale={stale} />}
+      {outcome.kind === "result" && <Results key={outcome.id} comparison={outcome.comparison} stale={stale} />}
     </div>
   );
 }
@@ -442,6 +447,28 @@ function Results({ comparison, stale }: { comparison: Comparison; stale: boolean
   const { currency, nights, travelers, exchange_rates: rates } = comparison;
   const jointLowest = comparison.destinations.filter((d) => d.lowest_estimate).length > 1;
   const climate = comparison.destinations.find((d) => d.climate !== null)?.climate;
+  const pins = useMemo(() => mapPins(comparison.destinations), [comparison]);
+  // The place selected on the map and on its cards, if any.
+  const [selected, setSelected] = useState<string | null>(null);
+  // Once the map has failed, the cards drop their numbers and map controls.
+  const [mapFailed, setMapFailed] = useState(false);
+  const hasMap = pins.length > 0 && !mapFailed;
+  const dropMap = () => {
+    setMapFailed(true);
+    setSelected(null);
+  };
+  const toggle = (place: string) => setSelected((current) => (current === place ? null : place));
+  // A pin that becomes selected brings its first card into view.
+  const selectFromPin = (place: string) => {
+    if (selected !== place) {
+      const i = comparison.destinations.findIndex((d) => d.place === place);
+      document.getElementById(cardId(i))?.scrollIntoView({
+        block: "nearest",
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+      });
+    }
+    toggle(place);
+  };
   return (
     <section className={styles.results} aria-labelledby="results-heading">
       <h2 id="results-heading">Results</h2>
@@ -455,10 +482,18 @@ function Results({ comparison, stale }: { comparison: Comparison; stale: boolean
           You changed the trip after this comparison. Select Compare estimates to update it.
         </p>
       )}
-      <div className={stale ? `${styles.cards} ${styles.staleCards}` : styles.cards}>
+      {pins.length > 0 && (
+        <div className={stale ? styles.stale : undefined}>
+          <ResultsMap pins={pins} selected={selected} onPinClick={selectFromPin} onFail={dropMap} />
+        </div>
+      )}
+      <div className={stale ? `${styles.cards} ${styles.stale}` : styles.cards}>
         {comparison.destinations.map((destination, i) => (
           <DestinationCard
             key={i}
+            id={cardId(i)}
+            number={hasMap ? i + 1 : null}
+            map={cardMap(destination, hasMap, selected, toggle)}
             destination={destination}
             currency={currency}
             nights={nights}
@@ -486,6 +521,49 @@ function Results({ comparison, stale }: { comparison: Comparison; stale: boolean
       </p>
     </section>
   );
+}
+
+function cardId(i: number) {
+  return `result-${i + 1}`;
+}
+
+// CardMap is a card's part in the map: null when the result has no map,
+// "off" for a destination without a place, or its selection otherwise.
+type CardMap = null | "off" | { selected: boolean; onToggle: () => void };
+
+function cardMap(
+  d: DestinationEstimate,
+  hasMap: boolean,
+  selected: string | null,
+  toggle: (place: string) => void,
+): CardMap {
+  if (!hasMap) {
+    return null;
+  }
+  const place = d.location === null ? null : d.place;
+  if (place === null) {
+    return "off";
+  }
+  return { selected: place === selected, onToggle: () => toggle(place) };
+}
+
+// mapPins groups the destinations that have a place into one pin per place,
+// in the order the result lists them.
+function mapPins(destinations: DestinationEstimate[]): Pin[] {
+  const pins: Pin[] = [];
+  destinations.forEach((d, i) => {
+    if (d.place === null || d.location === null) {
+      return;
+    }
+    let pin = pins.find((p) => p.place === d.place);
+    if (pin === undefined) {
+      pin = { place: d.place, latitude: d.location.latitude, longitude: d.location.longitude, numbers: [], labels: [] };
+      pins.push(pin);
+    }
+    pin.numbers.push(i + 1);
+    pin.labels.push(d.label);
+  });
+  return pins;
 }
 
 // BudgetSummary shows the budget as entered and in the comparison currency,
@@ -536,6 +614,9 @@ function RatesNote({ rates }: { rates: ExchangeRates }) {
 }
 
 function DestinationCard({
+  id,
+  number,
+  map,
   destination: d,
   currency,
   nights,
@@ -543,6 +624,10 @@ function DestinationCard({
   ratesAvailable,
   budgetConverted,
 }: {
+  id: string;
+  // The destination's number on the map, or null when there is no map.
+  number: number | null;
+  map: CardMap;
   destination: DestinationEstimate;
   currency: string;
   nights: number;
@@ -565,9 +650,26 @@ function DestinationCard({
       : "Exchange rates are unavailable right now, so this total cannot be calculated.";
   }
   return (
-    <article className={styles.card}>
-      <h3>{d.label}</h3>
+    <article id={id} className={map !== null && map !== "off" && map.selected ? `${styles.card} ${styles.selectedCard}` : styles.card}>
+      <h3>
+        {number !== null && <span className={styles.number}>{number}</span>}
+        {number !== null && " "}
+        {d.label}
+      </h3>
       {d.lowest_estimate && <p className={styles.badge}>{jointLowest ? "Joint lowest estimate" : "Lowest estimate"}</p>}
+      {map === "off" && <p className={styles.offMap}>Not on the map: no place chosen.</p>}
+      {map !== null && map !== "off" && (
+        <p className={styles.mapLine}>
+          <button
+            type="button"
+            className={`${styles.button} ${styles.secondary} ${styles.mapButton}`}
+            aria-pressed={map.selected}
+            onClick={map.onToggle}
+          >
+            Show on map
+          </button>
+        </p>
+      )}
       <dl className={styles.amounts}>
         <div>
           <dt>Round-trip flights</dt>

@@ -52,7 +52,15 @@ export type DestinationEstimate = DestinationInput &
     // null when the destination has no place, or its place has no typical
     // weather.
     climate: Climate | null;
+    // null when the destination has no place.
+    location: Location | null;
   };
+
+// Where a destination's place is, in degrees.
+export type Location = {
+  latitude: number;
+  longitude: number;
+};
 
 // Typical weather at a destination's place for each calendar month its stay
 // touches, in the order the stay reaches them, averaged over the years from
