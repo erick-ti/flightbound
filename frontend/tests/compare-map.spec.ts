@@ -1,12 +1,13 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import type { Page } from "@playwright/test";
+import type { BrowserContext, Page, Route } from "@playwright/test";
 import {
   card,
   compare,
   destination,
   expect,
   expectFallback,
+  FALLBACK,
   fillTrip,
   installGuard,
   openCompare,
@@ -229,3 +230,51 @@ test("a map library that fails to load leaves the cards", async ({ page, context
   await compare(page);
   await expectFallback(page);
 });
+
+// The page's clock is fake in the next two tests, so they can skip ahead
+// past its timeouts without waiting for them.
+test("a slow map library still gets the full load time", async ({ page, context }) => {
+  await page.clock.install();
+  await openCompare(page);
+  const library = await holdMapLibrary(context);
+  await fillTrip(page, twoPlaces);
+  await compare(page);
+  await library.requested;
+  // Past the 10 s load timeout, but that only starts once the library is in.
+  await page.clock.fastForward(15_000);
+  await library.release();
+  await expect(pins(page)).toHaveCount(2);
+  await expect(page.getByText(FALLBACK)).toHaveCount(0);
+});
+
+test("a map library that never arrives gives way to the cards", async ({ page, context }) => {
+  await page.clock.install();
+  await openCompare(page);
+  const library = await holdMapLibrary(context);
+  await fillTrip(page, twoPlaces);
+  await compare(page);
+  await library.requested;
+  await page.clock.fastForward(61_000);
+  await expectFallback(page);
+});
+
+// holdMapLibrary keeps every new chunk, which once the page has its code is
+// the map library, until release passes them on to the guard. requested
+// settles when the page first asks for one.
+async function holdMapLibrary(context: BrowserContext) {
+  const pattern = "**/_next/static/chunks/**";
+  const held: Route[] = [];
+  let markRequested = () => {};
+  const requested = new Promise<void>((resolve) => (markRequested = resolve));
+  await context.route(pattern, (route) => {
+    held.push(route);
+    markRequested();
+  });
+  return {
+    requested,
+    release: async () => {
+      await context.unroute(pattern);
+      await Promise.all(held.map((route) => route.fallback()));
+    },
+  };
+}
