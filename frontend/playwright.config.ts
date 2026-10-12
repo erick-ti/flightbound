@@ -16,5 +16,13 @@ export default defineConfig({
   reporter: "list",
   timeout: 30_000,
   expect: { timeout: 10_000 },
-  use: { baseURL, browserName: "chromium", headless: true },
+  // A failed test leaves a screenshot and a trace in test-results/, which CI
+  // uploads.
+  use: {
+    baseURL,
+    browserName: "chromium",
+    headless: true,
+    screenshot: "only-on-failure",
+    trace: "retain-on-failure",
+  },
 });

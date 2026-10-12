@@ -75,3 +75,14 @@ jobs:
       - name: make smoke
         if: steps.detect.outputs.present == 'true'
         run: make smoke
+
+      # Screenshots and traces of failed browser tests. They show only the
+      # saved test data the smoke servers use.
+      - name: upload browser test results
+        if: failure() && steps.detect.outputs.present == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-results
+          path: frontend/test-results/
+          retention-days: 7
+          if-no-files-found: ignore

@@ -29,7 +29,7 @@ The web app forwards `/api/trip-comparisons`, `/api/travel-advice/countries`, an
 
 Typical weather for the supported places and the map's land, lakes, and borders (from Natural Earth) are saved in the repository, so neither app needs an outside service for them. Rebuilding the weather figures from Copernicus data is described in [docs/trip-comparison.md](docs/trip-comparison.md#places-and-typical-weather); it needs [uv](https://docs.astral.sh/uv/) and a free Climate Data Store account.
 
-Run every check: Go formatting, vet, and tests with the race detector, both builds, then HTTP checks and browser tests of the map and trip links against both apps running on ports 18080 and 13000 (override with `SMOKE_API_PORT` and `SMOKE_WEB_PORT`).
+Run every check: Go formatting, vet, and tests with the race detector, both builds, then HTTP checks and browser tests of the results, the map, and trip links against both apps running on ports 18080 and 13000 (override with `SMOKE_API_PORT` and `SMOKE_WEB_PORT`).
 
 ```sh
 make smoke
@@ -41,5 +41,7 @@ The browser tests use Playwright's headless Chromium. Install it once, and again
 cd frontend
 npx playwright install --only-shell chromium
 ```
+
+A failed browser test leaves a screenshot and a trace in `frontend/test-results/` (open a trace with `npx playwright show-trace`). In CI they are uploaded as the `playwright-results` artifact and kept for 7 days.
 
 How the comparison works, including travel advice, typical weather, the map, and the API contract: [docs/trip-comparison.md](docs/trip-comparison.md).
