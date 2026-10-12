@@ -24,6 +24,9 @@ const BORDERS_URL = "/map/ne_110m_admin_0_boundary_lines_land.geojson";
 const SETTLED_BORDER = "International boundary (verify)";
 const ATTRIBUTION =
   '<a href="https://maplibre.org/">MapLibre</a> | <a href="https://www.naturalearthdata.com/">Natural Earth</a>';
+// The library gets its own, longer wait, so a slow connection that is still
+// downloading it does not use up the map's time to load.
+const LIBRARY_TIMEOUT_MS = 60_000;
 const LOAD_TIMEOUT_MS = 10_000;
 const WATER = "#d5e3ec";
 const LAND = "#fbfaf6";
@@ -31,9 +34,9 @@ const BORDER = "#9aa5b1";
 
 // ResultsMap shows a pin for each place in pins. A pin's button reports
 // clicks through onPinClick and is pressed while its place is selected. If
-// the map cannot be shown (no WebGL2, a file that fails to load, or no map
-// within LOAD_TIMEOUT_MS), it says so instead and calls onFail; the cards
-// carry everything.
+// the map cannot be shown (no WebGL2, a file that fails to load, no library
+// within LIBRARY_TIMEOUT_MS, or no map within LOAD_TIMEOUT_MS of the library
+// arriving), it says so instead and calls onFail; the cards carry everything.
 export default function ResultsMap({
   pins,
   selected,
@@ -84,12 +87,14 @@ export default function ResultsMap({
         onFailRef.current();
       }
     };
-    timer = setTimeout(fail, LOAD_TIMEOUT_MS);
+    timer = setTimeout(fail, LIBRARY_TIMEOUT_MS);
 
     import("maplibre-gl").then((maplibre) => {
       if (!active) {
         return;
       }
+      clearTimeout(timer);
+      timer = setTimeout(fail, LOAD_TIMEOUT_MS);
       maplibre.setWorkerUrl(new URL("maplibre-gl/dist/maplibre-gl-worker.mjs", import.meta.url).toString());
       let created: MapLibreMap;
       try {
