@@ -16,18 +16,25 @@ import {
   type TravelAdvice,
 } from "./api";
 import ResultsMap, { type Pin } from "./ResultsMap";
+import {
+  CURRENCIES,
+  MAX_DESTINATIONS,
+  MAX_TRAVELERS,
+  MIN_DESTINATIONS,
+  blankDestination,
+  initialDraft,
+  readTripLink,
+  toDraft,
+  toRequest,
+  tripLink,
+  type DestinationDraft,
+  type Draft,
+} from "./trip";
 import styles from "./TripComparison.module.css";
 
-// Currency codes the API accepts. The API validates the choice and owns each
-// currency's number of decimal places.
-const CURRENCIES = [
-  "AUD", "BRL", "CAD", "CHF", "CNY", "CZK", "DKK", "EUR", "GBP", "HKD",
-  "HUF", "IDR", "ILS", "INR", "ISK", "JPY", "KRW", "MXN", "MYR", "NOK",
-  "NZD", "PHP", "PLN", "RON", "SEK", "SGD", "THB", "TRY", "USD", "ZAR",
-];
-const MAX_TRAVELERS = 20;
-const MIN_DESTINATIONS = 2;
-const MAX_DESTINATIONS = 3;
+const UNREADABLE_LINK = "This trip link could not be opened. It may be incomplete or damaged.";
+const NO_PLACE_LIST =
+  "The place list could not be loaded, so this trip link cannot be opened. Reload the page to try again.";
 const ECB_RATES_URL =
   "https://www.ecb.europa.eu/stats/policy_and_exchange_rates/euro_reference_exchange_rates/html/index.en.html";
 const OGL_URL = "https://www.nationalarchives.gov.uk/doc/open-government-licence/version/3/";
@@ -38,33 +45,6 @@ const MONTHS = [
   "July", "August", "September", "October", "November", "December",
 ];
 
-type DestinationDraft = {
-  label: string;
-  // A place ID from the place list; "" means not listed. A place sets
-  // country to its own country, and the country menu stays locked until
-  // the place is cleared.
-  place: string;
-  // An FCDO country slug for travel advice; "" means none.
-  country: string;
-  flight: string;
-  // An amount's currency is null while it follows the comparison currency.
-  // Typing the amount or choosing its currency sets it for good.
-  flightCurrency: string | null;
-  nightly: string;
-  nightlyCurrency: string | null;
-};
-
-type Draft = {
-  checkIn: string;
-  checkOut: string;
-  travelers: number;
-  currency: string;
-  budget: string;
-  // Follows the comparison currency while null, like an estimate's currency.
-  budgetCurrency: string | null;
-  destinations: DestinationDraft[];
-};
-
 type Outcome =
   | { kind: "none" }
   // id is new for every comparison, so the results start over, with nothing
@@ -73,34 +53,70 @@ type Outcome =
   | { kind: "invalid"; message: string; fieldErrors: Record<string, string> }
   | { kind: "failed"; message: string };
 
-const blankDestination: DestinationDraft = {
-  label: "",
-  place: "",
-  country: "",
-  flight: "",
-  flightCurrency: null,
-  nightly: "",
-  nightlyCurrency: null,
-};
-
-const initialDraft: Draft = {
-  checkIn: "",
-  checkOut: "",
-  travelers: 2,
-  currency: "USD",
-  budget: "",
-  budgetCurrency: null,
-  destinations: [blankDestination, blankDestination],
-};
-
 export default function TripComparison() {
   const [draft, setDraft] = useState(initialDraft);
   const [pending, setPending] = useState(false);
   const [outcome, setOutcome] = useState<Outcome>({ kind: "none" });
-  const comparisons = useRef(0);
+  // Each comparison gets the next number, which is also its result's id.
+  // Only the latest may show its answer or change the address. A trip link
+  // takes a number too, so a comparison still out when it arrives is
+  // dropped.
+  const latest = useRef(0);
+  // A trip link read from the address, waiting for the place list to open.
+  const [linkToOpen, setLinkToOpen] = useState<{ request: ComparisonRequest } | null>(null);
+  const linkOpened = useRef<{ request: ComparisonRequest } | null>(null);
   // The two lists load separately, so either can fail on its own.
   const countries = useList(requestCountries);
   const places = useList(requestPlaces);
+
+  // The page reads the trip link in the address when it loads and whenever
+  // the fragment changes, and the link replaces whatever the page was doing
+  // from that moment, even while the place list is still loading. A link
+  // that cannot be read changes nothing in the form. Leaving the page drops
+  // any comparison still out, so its answer cannot write another page's
+  // address.
+  useEffect(() => {
+    const read = () => {
+      const request = readTripLink(window.location.hash);
+      if (request === "none") {
+        return;
+      }
+      latest.current += 1;
+      if (request === "unreadable") {
+        setLinkToOpen(null);
+        setPending(false);
+        setOutcome({ kind: "failed", message: UNREADABLE_LINK });
+        return;
+      }
+      setLinkToOpen({ request });
+      setPending(true);
+      setOutcome({ kind: "none" });
+    };
+    read();
+    window.addEventListener("hashchange", read);
+    return () => {
+      window.removeEventListener("hashchange", read);
+      latest.current += 1;
+    };
+  }, []);
+
+  // A link's places need the place list, so it opens once the list has
+  // loaded or failed. The ref keeps an effect run again for the same link,
+  // as Fast Refresh does, from opening it twice.
+  useEffect(() => {
+    if (linkToOpen === null || places === "loading" || linkOpened.current === linkToOpen) {
+      return;
+    }
+    linkOpened.current = linkToOpen;
+    const restored = toDraft(linkToOpen.request, places);
+    if (typeof restored === "string") {
+      setPending(false);
+      setOutcome({ kind: "failed", message: restored === "no_place_list" ? NO_PLACE_LIST : UNREADABLE_LINK });
+      return;
+    }
+    setDraft(restored);
+    void runComparison(restored);
+  }, [linkToOpen, places]);
 
   const errors: Record<string, string> = outcome.kind === "invalid" ? outcome.fieldErrors : {};
   const stale = outcome.kind === "result" && !sameDraft(outcome.submitted, draft);
@@ -161,13 +177,23 @@ export default function TripComparison() {
 
   async function handleSubmit(event: SubmitEvent<HTMLFormElement>) {
     event.preventDefault();
-    const submitted = draft;
+    await runComparison(draft);
+  }
+
+  async function runComparison(submitted: Draft) {
+    const id = ++latest.current;
     setPending(true);
-    const result = await requestComparison(toRequest(submitted));
+    const request = toRequest(submitted);
+    const result = await requestComparison(request);
+    if (id !== latest.current) {
+      return;
+    }
     setPending(false);
     if (result.kind === "ok") {
-      comparisons.current += 1;
-      setOutcome({ kind: "result", comparison: result.comparison, submitted, id: comparisons.current });
+      setOutcome({ kind: "result", comparison: result.comparison, submitted, id });
+      // The address now holds the trip these results came from. Next.js
+      // keeps its router in step with a replaceState given null state.
+      window.history.replaceState(null, "", tripLink(request));
     } else if (result.kind === "invalid") {
       const fieldErrors = Object.fromEntries(result.fieldErrors.map((e) => [e.field, e.message]));
       setOutcome({ kind: "invalid", message: result.message, fieldErrors });
@@ -518,6 +544,10 @@ function Results({ comparison, stale }: { comparison: Comparison; stale: boolean
       <p className={styles.note}>
         These are your own estimates, not live prices or supplier offers. They cover flights and
         accommodation only, not a full trip budget.
+      </p>
+      <p className={styles.note}>
+        This page&apos;s address now holds this trip, so you can bookmark it or send it. Anyone with the link
+        can see these estimates{comparison.budget !== null && " and your budget"}.
       </p>
     </section>
   );
@@ -922,34 +952,6 @@ function controlProps(path: string, error?: string, hasHint = false) {
 // ids such as "destinations-0-label".
 function domId(path: string) {
   return path.replace(/[[\].]+/g, "-").replace(/-$/, "");
-}
-
-function toRequest(draft: Draft): ComparisonRequest {
-  return {
-    check_in: draft.checkIn,
-    check_out: draft.checkOut,
-    travelers: draft.travelers,
-    currency: draft.currency,
-    budget: optionalAmount(draft.budget),
-    budget_currency: draft.budgetCurrency ?? draft.currency,
-    destinations: draft.destinations.map((d) => ({
-      label: d.label,
-      // With a place, the API takes the country from the place.
-      place: d.place === "" ? null : d.place,
-      country: d.place !== "" || d.country === "" ? null : d.country,
-      flight_estimate: optionalAmount(d.flight),
-      flight_estimate_currency: d.flightCurrency ?? draft.currency,
-      nightly_stay_estimate: optionalAmount(d.nightly),
-      nightly_stay_estimate_currency: d.nightlyCurrency ?? draft.currency,
-    })),
-  };
-}
-
-// A blank estimate is unknown, and a blank budget is not set. The API
-// validates everything else.
-function optionalAmount(value: string): string | null {
-  const trimmed = value.trim();
-  return trimmed === "" ? null : trimmed;
 }
 
 // useList loads a list once: "loading" until it arrives, then the list, or
