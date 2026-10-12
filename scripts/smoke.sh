@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Verifies the project end to end: Go formatting, vet, and tests (with the
 # race detector), both builds, then the comparison page and API through a
-# running Next.js server, and the map in a headless browser. The API reads
+# running Next.js server, and the page in a headless browser. The API reads
 # exchange rates from the saved ECB file in its test data and never fetches
 # them. It uses its own local ports, so it can run next to development
 # servers. The browser comes from `npx playwright install --only-shell
@@ -96,7 +96,7 @@ wait_for "$web_origin/compare" "$web_pid" "$tmp/web.log"
 echo "smoke: checking the page and API through $web_origin"
 node "$root/scripts/smoke-checks.mjs" "$web_origin"
 
-echo "smoke: checking the map and the cards in a browser"
+echo "smoke: checking the page in a browser"
 cd "$root/frontend"
 SMOKE_WEB_ORIGIN="$web_origin" ./node_modules/.bin/playwright test
 echo "smoke: ok"
