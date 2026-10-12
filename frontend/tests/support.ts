@@ -28,7 +28,14 @@ export async function installGuard(context: BrowserContext, origin: string): Pro
       return route.abort("blockedbyclient");
     }
     guard.allowed.push(url);
-    return route.fulfill({ response });
+    // A context that closes while a request is out, such as at the end of
+    // a test while the map is still loading, disposes the fetched answer
+    // before it is passed on. Any other failure is the test's.
+    return route.fulfill({ response }).catch((error: unknown) => {
+      if (!String(error).includes("Fetch response has been disposed")) {
+        throw error;
+      }
+    });
   });
   return guard;
 }
