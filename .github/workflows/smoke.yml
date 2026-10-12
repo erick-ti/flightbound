@@ -65,6 +65,13 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      # The headless browser for the map tests, at the version that
+      # @playwright/test pins, with the system libraries it needs.
+      - name: install the test browser
+        if: steps.detect.outputs.present == 'true'
+        working-directory: frontend
+        run: npx playwright install --with-deps --only-shell chromium
+
       - name: make smoke
         if: steps.detect.outputs.present == 'true'
         run: make smoke

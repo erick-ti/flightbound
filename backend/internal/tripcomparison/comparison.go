@@ -146,6 +146,10 @@ type DestinationEstimate struct {
 	// no normals. It never changes an amount, a budget status, or the
 	// lowest label.
 	Climate *Climate `json:"climate"`
+	// Location is where Place is, for the map, or nil when the destination
+	// has no place. It never changes an amount, a budget status, or the
+	// lowest label.
+	Location *Location `json:"location"`
 }
 
 // BudgetStatus is the result of checking a destination against the budget.
@@ -218,6 +222,7 @@ func Compare(ctx context.Context, req Request, rates fxrates.Source, advice trav
 		months := stayMonths(checkIn, nights)
 		for i, d := range parsed {
 			result.Destinations[i].Climate = climateFor(climateNormals, d.place, months)
+			result.Destinations[i].Location = locationOf(d.place)
 		}
 	}
 	if len(errs) > 0 {
